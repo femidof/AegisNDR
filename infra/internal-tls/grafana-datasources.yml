@@ -1,0 +1,41 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: Product State
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 3.4.0
+      timeInterval: 15s
+
+  - name: Product State
+    uid: product-state
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: $GRAFANA_POSTGRES_USER
+    editable: false
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: verify-full
+      sslrootcert: /run/internal-tls/ca-cert.pem
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 300
+    secureJsonData:
+      password: $GRAFANA_POSTGRES_PASSWORD

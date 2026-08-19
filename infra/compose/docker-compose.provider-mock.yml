@@ -1,0 +1,73 @@
+# Composed zero-retention HTTPS provider acceptance overlay.
+#
+# This overlay adds a deterministic HTTPS provider test double to the vendor
+# profile and re-points the model-gateway at it over verified TLS, proving the
+# composed gateway reaches a live provider endpoint (not the embedded demo
+# provider). It is used only by `scripts/test-https-provider.sh`; the base
+# Compose file remains the development default.
+#
+# Usage:
+#   docker compose -f infra/compose/docker-compose.yml \
+#     -f infra/compose/docker-compose.provider-mock.yml \
+#     --env-file infra/compose/.env --profile vendor up -d --build
+
+volumes:
+  provider-pki: {}
+
+services:
+  provider-mock:
+    profiles: [vendor]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command:
+      - python3
+      - /opt/hybrid-ndr/mock-https-provider.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9443"
+      - --pki-dir
+      - /pki
+      - --record-file
+      - /pki/records.jsonl
+      - --api-key
+      - ${MODEL_PROVIDER_API_KEY:-mock-provider-api-key}
+    volumes:
+      - provider-pki:/pki
+      - ../../scripts/mock-https-provider.py:/opt/hybrid-ndr/mock-https-provider.py:ro
+    networks: [outbound-control]
+    user: "0:0"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import ssl,urllib.request; urllib.request.urlopen('https://127.0.0.1:9443/healthz', context=ssl._create_unverified_context(), timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  model-gateway:
+    environment:
+      MODEL_PROVIDER_MODE: http
+      MODEL_PROVIDER_NAME: live-zero-retention
+      MODEL_PROVIDER_ENDPOINT: https://provider-mock:9443/v1/chat/completions
+      MODEL_PROVIDER_CA_FILE: /pki/ca-cert.pem
+      MODEL_PROVIDER_API_KEY: ${MODEL_PROVIDER_API_KEY:-mock-provider-api-key}
+      MODEL_PROVIDER_REGION: us
+      MODEL_PROVIDER_ZERO_RETENTION_VERIFIED: "true"
+      MODEL_PROVIDER_CACHE_DISABLED: "true"
+    volumes:
+      - control-api-data:/var/lib/hybrid-ndr
+      - provider-pki:/pki:ro
+    depends_on:
+      control-api:
+        condition: service_healthy
+      provider-mock:
+        condition: service_healthy

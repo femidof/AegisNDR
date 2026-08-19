@@ -1,0 +1,24 @@
+<clickhouse>
+  <http_port>0</http_port>
+  <https_port>8443</https_port>
+  <tcp_port_secure>9440</tcp_port_secure>
+  <openSSL>
+    <server>
+      <certificateFile>/var/lib/clickhouse/internal-tls/clickhouse-cert.pem</certificateFile>
+      <privateKeyFile>/var/lib/clickhouse/internal-tls/clickhouse-key.pem</privateKeyFile>
+      <caConfig>/var/lib/clickhouse/internal-tls/ca-cert.pem</caConfig>
+      <verificationMode>relaxed</verificationMode>
+      <cacheSessions>true</cacheSessions>
+      <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+      <preferServerCiphers>true</preferServerCiphers>
+    </server>
+    <client>
+      <caConfig>/var/lib/clickhouse/internal-tls/ca-cert.pem</caConfig>
+      <verificationMode>relaxed</verificationMode>
+      <loadDefaultCAFile>true</loadDefaultCAFile>
+      <cacheSessions>true</cacheSessions>
+      <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+      <preferServerCiphers>true</preferServerCiphers>
+    </client>
+  </openSSL>
+</clickhouse>

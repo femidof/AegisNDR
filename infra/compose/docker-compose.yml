@@ -1,0 +1,839 @@
+name: hybrid-ndr
+
+networks:
+  local-data:
+    internal: true
+  identity: {}
+  operator-access: {}
+  outbound-control: {}
+
+volumes:
+  clickhouse-data: {}
+  postgres-data: {}
+  minio-data: {}
+  prometheus-data: {}
+  grafana-data: {}
+  sensor-logs: {}
+  sensor-fixtures: {}
+  vector-data: {}
+  logto-postgres-data: {}
+  local-api-data: {}
+  control-api-data: {}
+  connector-state: {}
+
+services:
+  logto-postgres:
+    profiles: [vendor]
+    image: postgres:17.5-alpine3.22
+    environment:
+      POSTGRES_DB: ${LOGTO_POSTGRES_DB}
+      POSTGRES_USER: ${LOGTO_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${LOGTO_POSTGRES_PASSWORD}
+    volumes:
+      - logto-postgres-data:/var/lib/postgresql/data
+    networks: [identity]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  logto:
+    profiles: [vendor]
+    image: ghcr.io/logto-io/logto:1.39.0
+    entrypoint:
+      - sh
+      - -c
+      - npm run cli db seed -- --swe && npm start
+    environment:
+      DB_URL: postgresql://${LOGTO_POSTGRES_USER}:${LOGTO_POSTGRES_PASSWORD}@logto-postgres:5432/${LOGTO_POSTGRES_DB}
+      DATABASE_STATEMENT_TIMEOUT: ${LOGTO_DATABASE_STATEMENT_TIMEOUT:-5000}
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3011}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3012}
+      TRUST_PROXY_HEADER: "0"
+    networks: [identity, operator-access]
+    ports:
+      - "127.0.0.1:3011:3001"
+      - "127.0.0.1:3012:3002"
+    depends_on:
+      logto-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3001/oidc/.well-known/openid-configuration').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  postgres:
+    profiles: [customer]
+    image: postgres:16.9-alpine3.21
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      GRAFANA_POSTGRES_USER: ${GRAFANA_POSTGRES_USER}
+      GRAFANA_POSTGRES_PASSWORD: ${GRAFANA_POSTGRES_PASSWORD}
+      POSTGRES_EXPORTER_USER: ${POSTGRES_EXPORTER_USER}
+      POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../postgres/001-product-state.sql:/docker-entrypoint-initdb.d/001-product-state.sql:ro
+      - ../postgres/002-observability-roles.sh:/docker-entrypoint-initdb.d/002-observability-roles.sh:ro
+      - ../postgres/003-operational-retention.sql:/docker-entrypoint-initdb.d/003-operational-retention.sql:ro
+    networks: [local-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && test \"$$(psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -Atqc 'SELECT count(*) FROM local_state.schema_migrations WHERE version = 1')\" = 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  clickhouse:
+    profiles: [customer]
+    image: clickhouse/clickhouse-server:24.8.14.39-alpine
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../clickhouse/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    networks: [local-data]
+    healthcheck:
+      test: [CMD-SHELL, "test \"$$(clickhouse-client --user $${CLICKHOUSE_USER} --password $${CLICKHOUSE_PASSWORD} --query 'EXISTS TABLE hybrid_ndr.network_events')\" = 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    profiles: [customer]
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # Cluster metrics require a scrape token; minio-init writes the JWT that
+      # Prometheus uses (bearer_token_file), so storage telemetry is not
+      # readable by arbitrary containers on the internal network.
+      MINIO_PROMETHEUS_AUTH_TYPE: private
+    volumes:
+      - minio-data:/data
+    networks: [local-data]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio-init:
+    profiles: [customer]
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: [/bin/sh, /opt/hybrid-ndr/initialize-buckets.sh]
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-ndr-raw-evidence}
+      MINIO_CASE_BUCKET: ${MINIO_CASE_BUCKET:-ndr-case-evidence}
+      MINIO_EXPORT_BUCKET: ${MINIO_EXPORT_BUCKET:-ndr-investigation-exports}
+      MINIO_RAW_RETENTION_DAYS: ${MINIO_RAW_RETENTION_DAYS:-30}
+      MINIO_CASE_RETENTION_DAYS: ${MINIO_CASE_RETENTION_DAYS:-365}
+      MINIO_EXPORT_RETENTION_DAYS: ${MINIO_EXPORT_RETENTION_DAYS:-30}
+    volumes:
+      - ../minio/initialize-buckets.sh:/opt/hybrid-ndr/initialize-buckets.sh:ro
+      # The one-shot provisioning container writes the MinIO Prometheus JWT
+      # here; it stays unprivileged (no capabilities, no new privileges) and
+      # runs as the same unprivileged UID that owns the prometheus-data volume.
+      - prometheus-data:/prometheus-data
+    user: "65534:65534"
+    networks: [local-data]
+    depends_on:
+      minio:
+        condition: service_healthy
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: "no"
+
+  sensor-fixture:
+    profiles: [customer]
+    image: python:3.12.11-alpine3.22
+    command:
+      - python3
+      - /opt/hybrid-ndr/generate_sensor_pcap.py
+      - /var/lib/sensor-fixtures/sensor-acceptance.pcap
+      - --verify-sha256
+      - 7a85d9ab26cf52dd46890f38b48b4dfddefed7d6ff1653e1dc8915cb4a3457ca
+    volumes:
+      - sensor-fixtures:/var/lib/sensor-fixtures
+      - ../../tests/fixtures/generate_sensor_pcap.py:/opt/hybrid-ndr/generate_sensor_pcap.py:ro
+    networks: [local-data]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: "no"
+
+  suricata:
+    profiles: [customer]
+    image: jasonish/suricata:7.0.10
+    entrypoint: [/bin/sh, /opt/hybrid-ndr/run-sensor.sh]
+    environment:
+      SENSOR_CAPTURE_MODE: ${SENSOR_CAPTURE_MODE:-pcap}
+      CAPTURE_INTERFACE: ${CAPTURE_INTERFACE:-eth1}
+      SENSOR_PCAP: /var/lib/sensor-fixtures/sensor-acceptance.pcap
+      SURICATA_LOG_DIR: /var/log/sensors/suricata
+      SURICATA_RULES: /etc/suricata/rules/hybrid-ndr.rules
+    volumes:
+      - sensor-fixtures:/var/lib/sensor-fixtures:ro
+      - sensor-logs:/var/log/sensors
+      - ../suricata/hybrid-ndr.rules:/etc/suricata/rules/hybrid-ndr.rules:ro
+      - ../suricata/run-sensor.sh:/opt/hybrid-ndr/run-sensor.sh:ro
+      - ../suricata/run-offline.sh:/opt/hybrid-ndr/run-offline.sh:ro
+    network_mode: ${SENSOR_NETWORK_MODE:-none}
+    read_only: true
+    tmpfs: [/run, /tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH, NET_ADMIN, NET_RAW]
+    depends_on:
+      sensor-fixture:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD-SHELL, "test -f /var/log/sensors/suricata/.ready && { test \"$${SENSOR_CAPTURE_MODE}\" = live || test -s /var/log/sensors/suricata/eve.json; }"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  zeek:
+    profiles: [customer]
+    image: zeek/zeek:7.2.1
+    entrypoint: [/bin/sh, /opt/hybrid-ndr/run-sensor.sh]
+    environment:
+      SENSOR_CAPTURE_MODE: ${SENSOR_CAPTURE_MODE:-pcap}
+      CAPTURE_INTERFACE: ${CAPTURE_INTERFACE:-eth1}
+      SENSOR_PCAP: /var/lib/sensor-fixtures/sensor-acceptance.pcap
+      ZEEK_LOG_DIR: /var/log/sensors/zeek
+    volumes:
+      - sensor-fixtures:/var/lib/sensor-fixtures:ro
+      - sensor-logs:/var/log/sensors
+      - ../zeek/local.zeek:/opt/hybrid-ndr/local.zeek:ro
+      - ../zeek/run-sensor.sh:/opt/hybrid-ndr/run-sensor.sh:ro
+      - ../zeek/run-offline.sh:/opt/hybrid-ndr/run-offline.sh:ro
+    network_mode: ${SENSOR_NETWORK_MODE:-none}
+    read_only: true
+    tmpfs: [/run, /tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    depends_on:
+      sensor-fixture:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD-SHELL, "test -f /var/log/sensors/zeek/.ready && { test \"$${SENSOR_CAPTURE_MODE}\" = live || test -s /var/log/sensors/zeek/conn.log; }"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  vector:
+    profiles: [customer]
+    image: timberio/vector:0.46.1-alpine
+    environment:
+      TENANT_ID: ${TENANT_ID:-11111111-1111-4111-8111-111111111111}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:-22222222-2222-4222-8222-222222222222}
+      SURICATA_SENSOR_ID: ${SURICATA_SENSOR_ID:-sensor-suricata-01}
+      ZEEK_SENSOR_ID: ${ZEEK_SENSOR_ID:-sensor-zeek-01}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - sensor-logs:/var/log/sensors:ro
+      - vector-data:/var/lib/vector
+      - ../vector/vector.yaml:/etc/vector/vector.yaml:ro
+    networks: [local-data]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      suricata:
+        condition: service_healthy
+      zeek:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- http://127.0.0.1:8686/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  detection-engine:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "services/detection-engine/run-service.py"]
+    environment:
+      TENANT_ID: ${TENANT_ID}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID}
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_SCHEMA: local_state
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      DETECTION_POLL_SECONDS: ${DETECTION_POLL_SECONDS:-2}
+      DETECTION_FAST_INTERVAL_SECONDS: ${DETECTION_FAST_INTERVAL_SECONDS:-10}
+      DETECTION_BEHAVIOR_INTERVAL_SECONDS: ${DETECTION_BEHAVIOR_INTERVAL_SECONDS:-60}
+      DETECTION_TUNNELING_INTERVAL_SECONDS: ${DETECTION_TUNNELING_INTERVAL_SECONDS:-300}
+      DETECTION_BASELINE_INTERVAL_SECONDS: ${DETECTION_BASELINE_INTERVAL_SECONDS:-3600}
+      DETECTION_MODEL_RETRAIN_INTERVAL_SECONDS: ${DETECTION_MODEL_RETRAIN_INTERVAL_SECONDS:-86400}
+      DETECTION_BASELINE_WINDOW_DAYS: ${DETECTION_BASELINE_WINDOW_DAYS:-7}
+      DETECTION_BASELINE_EXCLUSION_SECONDS: ${DETECTION_BASELINE_EXCLUSION_SECONDS:-300}
+      DETECTION_BOOTSTRAP_LOOKBACK_SECONDS: ${DETECTION_BOOTSTRAP_LOOKBACK_SECONDS:-86400}
+      DETECTION_MAX_EVENTS_PER_WINDOW: ${DETECTION_MAX_EVENTS_PER_WINDOW:-10000}
+      DETECTION_BACKEND_TIMEOUT_SECONDS: ${DETECTION_BACKEND_TIMEOUT_SECONDS:-10}
+      DETECTION_HEALTH_FILE: /tmp/hybrid-ndr-detection-health.json
+      DETECTION_HEALTH_TTL_SECONDS: ${DETECTION_HEALTH_TTL_SECONDS:-30}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+    networks: [local-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      vector:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import os,time; p=os.environ['DETECTION_HEALTH_FILE']; assert time.time()-os.stat(p).st_mtime < int(os.environ['DETECTION_HEALTH_TTL_SECONDS'])"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  local-api:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "apps/local-api/app.py", "--host", "0.0.0.0", "--port", "8080", "--database", "/var/lib/hybrid-ndr/local-api.sqlite3", "--seed-demo"]
+    environment:
+      TENANT_ID: ${TENANT_ID}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID}
+      MODEL_POLICY: ${MODEL_POLICY}
+      MODEL_GATEWAY_AVAILABLE: ${MODEL_GATEWAY_AVAILABLE}
+      AUTH_MODE: ${AUTH_MODE:-jwt}
+      AUTH_ISSUER: ${LOGTO_ENDPOINT:-http://localhost:3011}/oidc
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-https://hybrid-ndr.local/api}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://logto:3001/oidc/jwks}
+      # Development-only: the installer never sets this; production JWKS
+      # fetches are verified HTTPS (see docker-compose.https.yml).
+      AUTH_JWKS_ALLOW_INSECURE_HTTP: ${AUTH_JWKS_ALLOW_INSECURE_HTTP:-}
+      AUTH_TENANT_ID: ${TENANT_ID}
+      AUTH_DEPLOYMENT_ID: ${DEPLOYMENT_ID}
+      AUTH_ALLOWED_ORGANIZATION_IDS: ${AUTH_ALLOWED_ORGANIZATION_IDS:-}
+      AUTH_ALGORITHMS: RS256
+      AUTH_REQUIRE_ROLE_CLAIM: "true"
+      PERSISTENCE_PROFILE: ${PERSISTENCE_PROFILE:-production}
+      PERSISTENCE_READINESS_REQUIRED: ${PERSISTENCE_READINESS_REQUIRED:-true}
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_SCHEMA: local_state
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: ${MINIO_CASE_BUCKET:-ndr-case-evidence}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      SQLITE_DATABASE: /var/lib/hybrid-ndr/local-api.sqlite3
+      EVIDENCE_PATH: /var/lib/hybrid-ndr/evidence
+      AUTH_STANDALONE_ISSUER_KEY_FILE: ${AUTH_STANDALONE_ISSUER_KEY_FILE:-}
+      AUTH_STANDALONE_JWKS_FILE: ${AUTH_STANDALONE_JWKS_FILE:-}
+      AUTH_STANDALONE_LOGIN_SECRET: ${AUTH_STANDALONE_LOGIN_SECRET:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+    volumes:
+      - local-api-data:/var/lib/hybrid-ndr
+      - ${HYBRID_NDR_STATE_DIR:-./.runtime}/identity:/var/lib/hybrid-ndr/identity:ro
+    # The customer data plane must not have outbound internet reach: no
+    # outbound-control membership here (the deployment connector owns it).
+    networks: [local-data, identity, operator-access]
+    ports:
+      - "${CUSTOMER_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  pki-init:
+    profiles: [vendor]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command:
+      - python3
+      - -c
+      - "import importlib.util, os; spec = importlib.util.spec_from_file_location('pki', '/app/apps/control-api/hybrid_ndr_control_api/pki.py'); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.CertificateAuthority.load_or_create(os.environ['CONTROL_API_CA_KEY_FILE'], os.environ['CONTROL_API_CA_CERT_FILE'])"
+    environment:
+      CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
+      CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
+    volumes:
+      - control-api-data:/var/lib/hybrid-ndr
+    networks: [operator-access]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: "no"
+
+  control-api:
+    profiles: [vendor]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "apps/control-api/app.py", "--host", "0.0.0.0", "--port", "8081", "--database", "/var/lib/hybrid-ndr/control-api.sqlite3"]
+    environment:
+      CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
+      CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
+      CONTROL_API_ALLOW_INSECURE_FINGERPRINT_HEADER: ${CONTROL_API_ALLOW_INSECURE_FINGERPRINT_HEADER:-false}
+      CONTROL_API_PUBLIC_URL: ${CONTROL_API_PUBLIC_URL:-http://control-api:8081/v1}
+      MODEL_GATEWAY_PUBLIC_URL: ${MODEL_GATEWAY_PUBLIC_URL:-http://model-gateway:8082/v1/model/investigate}
+      CONTROL_PORTAL_AUTH_MODE: ${CONTROL_PORTAL_AUTH_MODE:-jwt}
+      CONTROL_PORTAL_AUTH_ISSUER: ${CONTROL_PORTAL_AUTH_ISSUER:-http://localhost:3011/oidc}
+      CONTROL_PORTAL_AUTH_AUDIENCE: ${CONTROL_PORTAL_AUTH_AUDIENCE:-https://hybrid-ndr.cloud/api}
+      CONTROL_PORTAL_AUTH_JWKS_URL: ${CONTROL_PORTAL_AUTH_JWKS_URL:-http://logto:3001/oidc/jwks}
+      # Development-only; production requires verified HTTPS.
+      CONTROL_PORTAL_AUTH_JWKS_ALLOW_INSECURE_HTTP: ${CONTROL_PORTAL_AUTH_JWKS_ALLOW_INSECURE_HTTP:-}
+      CONTROL_PORTAL_AUTH_ALLOWED_ORGANIZATION_IDS: ${CONTROL_PORTAL_AUTH_ALLOWED_ORGANIZATION_IDS:-}
+      CONTROL_PORTAL_AUTH_REVOKED_TOKEN_IDS: ${CONTROL_PORTAL_AUTH_REVOKED_TOKEN_IDS:-}
+      CONTROL_PORTAL_AUTH_REVOKED_SESSION_IDS: ${CONTROL_PORTAL_AUTH_REVOKED_SESSION_IDS:-}
+      CONTROL_IDENTITY_ISSUER: ${CONTROL_IDENTITY_ISSUER:-http://localhost:3011/oidc}
+      CONTROL_IDENTITY_JWKS_URI: ${CONTROL_IDENTITY_JWKS_URI:-http://localhost:3011/oidc/jwks}
+      LOGTO_DASHBOARD_CLIENT_ID: ${LOGTO_DASHBOARD_CLIENT_ID:-}
+      LOGTO_DASHBOARD_SCOPES: ${LOGTO_DASHBOARD_SCOPES:-}
+    volumes:
+      - control-api-data:/var/lib/hybrid-ndr
+    networks: [operator-access, outbound-control]
+    ports:
+      - "127.0.0.1:8081:8081"
+    # The deployment CA must be provisioned before either this service or the
+    # model gateway starts: load_or_create on shared files has a first-boot
+    # race. pki-init is the single provisioner.
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  cloud-portal:
+    profiles: [vendor]
+    build:
+      context: ../..
+      dockerfile: infra/compose/cloud-portal.Dockerfile
+    environment:
+      CONTROL_API_INTERNAL_URL: http://control-api:8081
+      CLOUD_PORTAL_PUBLIC_ORIGIN: ${CLOUD_PORTAL_PUBLIC_ORIGIN:-http://localhost:4180}
+      LOGTO_PUBLIC_ENDPOINT: ${LOGTO_PUBLIC_ENDPOINT:-http://localhost:3011}
+      LOGTO_CLOUD_PORTAL_CLIENT_ID: ${LOGTO_CLOUD_PORTAL_CLIENT_ID:-}
+      LOGTO_CLOUD_PORTAL_ORGANIZATION_ID: ${LOGTO_CLOUD_PORTAL_ORGANIZATION_ID:-}
+      LOGTO_CLOUD_PORTAL_REDIRECT_URI: ${LOGTO_CLOUD_PORTAL_REDIRECT_URI:-http://localhost:4180/callback}
+      LOGTO_CLOUD_PORTAL_POST_LOGOUT_URI: ${LOGTO_CLOUD_PORTAL_POST_LOGOUT_URI:-http://localhost:4180}
+      LOGTO_CLOUD_PORTAL_SCOPES: ${LOGTO_CLOUD_PORTAL_SCOPES:-}
+      CONTROL_PORTAL_AUTH_AUDIENCE: ${CONTROL_PORTAL_AUTH_AUDIENCE:-https://hybrid-ndr.cloud/api}
+    networks: [operator-access]
+    ports:
+      - "127.0.0.1:4180:4180"
+    depends_on:
+      control-api:
+        condition: service_healthy
+      logto:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:4180/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  model-gateway:
+    profiles: [vendor]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "services/model-gateway/app.py", "--host", "0.0.0.0", "--port", "8082"]
+    environment:
+      CONTROL_API_DATABASE: /var/lib/hybrid-ndr/control-api.sqlite3
+      CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
+      CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
+      MODEL_PROVIDER_MODE: ${MODEL_PROVIDER_MODE:-http}
+      MODEL_PROVIDER_NAME: ${MODEL_PROVIDER_NAME:-}
+      MODEL_PROVIDER_ENDPOINT: ${MODEL_PROVIDER_ENDPOINT:-}
+      MODEL_PROVIDER_API_KEY: ${MODEL_PROVIDER_API_KEY:-}
+      MODEL_PROVIDER_REGION: ${MODEL_PROVIDER_REGION:-us}
+      MODEL_PROVIDER_ZERO_RETENTION_VERIFIED: ${MODEL_PROVIDER_ZERO_RETENTION_VERIFIED:-false}
+      MODEL_PROVIDER_CACHE_DISABLED: ${MODEL_PROVIDER_CACHE_DISABLED:-false}
+      MODEL_PROVIDER_STREAM: ${MODEL_PROVIDER_STREAM:-false}
+      MODEL_GATEWAY_SIGNING_KEY: ${MODEL_GATEWAY_SIGNING_KEY:-}
+      MODEL_GATEWAY_APPROVED_MODELS: ${MODEL_GATEWAY_APPROVED_MODELS:-evidence-assessor-v1}
+      MODEL_GATEWAY_APPROVED_REGIONS: ${MODEL_GATEWAY_APPROVED_REGIONS:-us,eu}
+      # INVARIANT: the model gateway must require the TLS-verified client
+      # certificate fingerprint. The insecure header fallback is a loopback
+      # development escape hatch only and defaults to false here; production
+      # deployments must never set it true (vendor development sets it in
+      # .env.example, never in the installer-generated customer.env).
+      MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER: ${MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER:-false}
+    volumes:
+      - control-api-data:/var/lib/hybrid-ndr
+    networks: [operator-access, outbound-control]
+    ports:
+      - "127.0.0.1:8082:8082"
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      control-api:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  deployment-connector:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "services/deployment-connector/app.py"]
+    environment:
+      CONNECTOR_ENABLED: ${CONNECTOR_ENABLED:-false}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-}
+      CONTROL_PLANE_CA_FILE: ${CONTROL_PLANE_CA_FILE:-}
+      CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK: ${CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK:-false}
+      HYBRID_NDR_RELEASE_VERSION: ${HYBRID_NDR_RELEASE_VERSION:-0.1.0}
+      HYBRID_NDR_STATE_DIR: /var/lib/hybrid-ndr
+      CONNECTOR_HEARTBEAT_SECONDS: ${CONNECTOR_HEARTBEAT_SECONDS:-60}
+      CONNECTOR_USAGE_SECONDS: ${CONNECTOR_USAGE_SECONDS:-300}
+      CONNECTOR_CONFIGURATION_SECONDS: ${CONNECTOR_CONFIGURATION_SECONDS:-300}
+      CONNECTOR_UPDATE_SECONDS: ${CONNECTOR_UPDATE_SECONDS:-3600}
+      CONNECTOR_UPDATE_MANIFEST_FILE: ${CONNECTOR_UPDATE_MANIFEST_FILE:-/var/lib/hybrid-ndr/updates/available-manifest.json}
+      CONNECTOR_CERTIFICATE_CHECK_SECONDS: ${CONNECTOR_CERTIFICATE_CHECK_SECONDS:-21600}
+      CONNECTOR_CERTIFICATE_ROTATE_BEFORE_DAYS: ${CONNECTOR_CERTIFICATE_ROTATE_BEFORE_DAYS:-30}
+      CONNECTOR_HEALTH_FILE: /tmp/hybrid-ndr-connector-health
+      # The installer-provisioned identity (private key, CSR, enrollment
+      # metadata) is mounted read-only; rotated certificates and updated
+      # enrollment state are written into the connector state volume instead,
+      # so a compromised connector cannot overwrite the deployment's key.
+      CONNECTOR_IDENTITY_WRITE_DIR: /var/lib/hybrid-ndr/connector/identity
+    volumes:
+      - connector-state:/var/lib/hybrid-ndr/connector
+      - ${HYBRID_NDR_STATE_DIR:-./.runtime}/identity:/var/lib/hybrid-ndr/identity:ro
+      - ${HYBRID_NDR_STATE_DIR:-./.runtime}/updates:/var/lib/hybrid-ndr/updates
+    networks: [outbound-control]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/hybrid-ndr-connector-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  update-agent:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "services/update-agent/app.py", "monitor"]
+    environment:
+      HYBRID_NDR_STATE_DIR: /var/lib/hybrid-ndr
+      UPDATE_AGENT_MONITOR_SECONDS: ${UPDATE_AGENT_MONITOR_SECONDS:-30}
+      UPDATE_AGENT_HEALTH_FILE: /tmp/hybrid-ndr-update-health.json
+    volumes:
+      - ${HYBRID_NDR_STATE_DIR:-./.runtime}/identity:/var/lib/hybrid-ndr/identity:ro
+      - ${HYBRID_NDR_STATE_DIR:-./.runtime}/updates:/var/lib/hybrid-ndr/updates
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json; assert json.load(open('/tmp/hybrid-ndr-update-health.json', encoding='ascii'))['status'] == 'ok'"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  dashboard:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/dashboard.Dockerfile
+    networks: [local-data, operator-access]
+    environment:
+      API_INTERNAL_URL: http://local-api:8080
+      DASHBOARD_MODE: ${DASHBOARD_MODE:-api}
+      DASHBOARD_AUTH_MODE: ${DASHBOARD_AUTH_MODE:-oidc}
+      DASHBOARD_ALLOW_INSECURE_HTTP: ${DASHBOARD_ALLOW_INSECURE_HTTP:-false}
+      DASHBOARD_PUBLIC_ORIGIN: ${DASHBOARD_PUBLIC_ORIGIN:-}
+      LOGTO_PUBLIC_ENDPOINT: ${LOGTO_PUBLIC_ENDPOINT:-}
+      LOGTO_DASHBOARD_CLIENT_ID: ${LOGTO_DASHBOARD_CLIENT_ID:-}
+      LOGTO_ORGANIZATION_ID: ${LOGTO_ORGANIZATION_ID:-}
+      LOGTO_REDIRECT_URI: ${LOGTO_REDIRECT_URI:-}
+      LOGTO_POST_LOGOUT_URI: ${LOGTO_POST_LOGOUT_URI:-}
+      LOGTO_DASHBOARD_SCOPES: ${LOGTO_DASHBOARD_SCOPES:-}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-https://hybrid-ndr.local/api}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID}
+    ports:
+      - "${CUSTOMER_BIND_ADDRESS:-127.0.0.1}:4173:4173"
+    depends_on:
+      local-api:
+        condition: service_healthy
+
+  otel-collector:
+    profiles: [customer]
+    image: otel/opentelemetry-collector-contrib:0.153.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ../otel/collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    networks: [local-data]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    # No container-level healthcheck is possible: the image is distroless and
+    # ships only the /otelcol-contrib binary (no shell, no wget). Liveness is
+    # covered by the blackbox-exporter service-health probe of its 13133
+    # health_check extension (Prometheus rule), and fatal config errors exit
+    # the process, which restart: unless-stopped recovers. Prometheus therefore
+    # keeps condition: service_started for this service only.
+
+  operations-agent:
+    profiles: [customer]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: ["python3", "services/operations-agent/app.py"]
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      MINIO_ENDPOINT: http://minio:9000
+      OPERATIONS_MIGRATION_FILE: /opt/hybrid-ndr/003-operational-retention.sql
+      OPERATIONS_POLL_SECONDS: ${OPERATIONS_POLL_SECONDS:-15}
+      OPERATIONS_HEALTH_SNAPSHOT_SECONDS: ${OPERATIONS_HEALTH_SNAPSHOT_SECONDS:-3600}
+      OPERATIONS_METRICS_TOKEN: ${OPERATIONS_METRICS_TOKEN:-}
+      RETENTION_INTERVAL_SECONDS: ${RETENTION_INTERVAL_SECONDS:-86400}
+      CLICKHOUSE_EVENT_RETENTION_DAYS: ${CLICKHOUSE_EVENT_RETENTION_DAYS:-30}
+      POSTGRES_EVENT_RETENTION_DAYS: ${POSTGRES_EVENT_RETENTION_DAYS:-30}
+      OPERATIONAL_HISTORY_RETENTION_DAYS: ${OPERATIONAL_HISTORY_RETENTION_DAYS:-90}
+      MINIO_RAW_RETENTION_DAYS: ${MINIO_RAW_RETENTION_DAYS:-30}
+      MINIO_CASE_RETENTION_DAYS: ${MINIO_CASE_RETENTION_DAYS:-365}
+      MINIO_EXPORT_RETENTION_DAYS: ${MINIO_EXPORT_RETENTION_DAYS:-30}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+    volumes:
+      - ../postgres/003-operational-retention.sql:/opt/hybrid-ndr/003-operational-retention.sql:ro
+    networks: [local-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  prometheus:
+    profiles: [customer]
+    image: prom/prometheus:v3.4.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}
+      - --web.enable-lifecycle
+    environment:
+      # Expanded by Prometheus into the operations-agent scrape credentials.
+      OPERATIONS_METRICS_TOKEN: ${OPERATIONS_METRICS_TOKEN:-}
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules.yml:/etc/prometheus/rules/hybrid-ndr.yml:ro
+      - prometheus-data:/prometheus
+      - prometheus-data:/prometheus-data
+    networks: [local-data]
+    depends_on:
+      blackbox-exporter:
+        condition: service_healthy
+      postgres-exporter:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      operations-agent:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  blackbox-exporter:
+    profiles: [customer]
+    image: prom/blackbox-exporter:v0.27.0
+    command: ["--config.file=/etc/blackbox_exporter/config.yml"]
+    volumes:
+      - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks: [local-data, outbound-control]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:9115/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  postgres-exporter:
+    profiles: [customer]
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD}
+    networks: [local-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:9187/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  grafana:
+    profiles: [customer]
+    image: grafana/grafana:12.0.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_SECURITY_COOKIE_SECURE: "false"
+      # Optional Logto OIDC sign-in for analysts. Set LOGTO_GRAFANA_CLIENT_ID
+      # and LOGTO_GRAFANA_CLIENT_SECRET (a Logto application with the
+      # openid/profile/email scopes and redirect URI https://<lan-host>/grafana/login/generic_oauth)
+      # to enable; when unset, the local Grafana admin credentials remain the
+      # only sign-in path.
+      GF_AUTH_GENERIC_OAUTH_ENABLED: ${GF_AUTH_GENERIC_OAUTH_ENABLED:-false}
+      GF_AUTH_GENERIC_OAUTH_NAME: Logto
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: ${LOGTO_GRAFANA_CLIENT_ID:-}
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${LOGTO_GRAFANA_CLIENT_SECRET:-}
+      GF_AUTH_GENERIC_OAUTH_SCOPES: openid profile email
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: ${LOGTO_PUBLIC_ENDPOINT:-http://localhost:3011}/oidc/auth
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: ${LOGTO_PUBLIC_ENDPOINT:-http://localhost:3011}/oidc/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: ${LOGTO_PUBLIC_ENDPOINT:-http://localhost:3011}/oidc/userinfo
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN: "false"
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+      POSTGRES_DB: ${POSTGRES_DB}
+      GRAFANA_POSTGRES_USER: ${GRAFANA_POSTGRES_USER}
+      GRAFANA_POSTGRES_PASSWORD: ${GRAFANA_POSTGRES_PASSWORD}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [local-data, operator-access]
+    # Grafana is intentionally not published in the base Compose; the HTTPS
+    # production overlay routes it through the ingress at /grafana/. The old
+    # 127.0.0.1:3001 mapping was removed so development matches production.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health | grep -q '\"database\": \"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s

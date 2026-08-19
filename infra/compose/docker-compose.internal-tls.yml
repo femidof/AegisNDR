@@ -1,0 +1,115 @@
+# Internal data-plane TLS overlay for the customer profile.
+#
+# Encrypts every internal credential-bearing hop between the product services
+# and PostgreSQL, ClickHouse, and MinIO using a generated private CA. Clients
+# pin the internal CA (PERSISTENCE_CA_FILE) and use TLS URLs with verified
+# hostnames, so a plaintext listener or an untrusted certificate is rejected.
+#
+# This overlay is applied automatically by the signed installer for every
+# customer deployment: install.sh provisions the CA/certificates into
+# <state-dir>/internal-tls, writes HYBRID_NDR_INTERNAL_TLS_DIR into
+# customer.env, and appends this file to the Compose invocation.
+#
+# Prerequisite (manual development runs only): generate the CA and server
+# certificates first:
+#   bash infra/internal-tls/provision-internal-certs.sh .runtime/internal-tls
+#
+# Usage (example):
+#   docker compose -f infra/compose/docker-compose.yml \
+#     -f infra/compose/docker-compose.internal-tls.yml \
+#     --env-file infra/compose/.env --profile customer up -d
+
+services:
+  postgres:
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        install -d -o postgres -g postgres -m 0700 /run/internal-tls
+        for name in postgres-cert.pem postgres-key.pem ca-cert.pem; do
+          install -o postgres -g postgres -m 0600 "/mnt/internal-tls/$$name" "/run/internal-tls/$$name"
+        done
+        install -o postgres -g postgres -m 0600 /mnt/pg-hba.conf /run/internal-tls/pg_hba.conf
+        exec gosu postgres postgres \
+          -c ssl=on \
+          -c ssl_cert_file=/run/internal-tls/postgres-cert.pem \
+          -c ssl_key_file=/run/internal-tls/postgres-key.pem \
+          -c hba_file=/run/internal-tls/pg_hba.conf
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}:/mnt/internal-tls:ro
+      - ../internal-tls/pg_hba.conf:/mnt/pg-hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+
+  clickhouse:
+    entrypoint:
+      - /bin/sh
+      - /opt/hybrid-ndr/clickhouse-entrypoint.sh
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}:/mnt/internal-tls:ro
+      - ../internal-tls/clickhouse-tls.xml:/etc/clickhouse-server/config.d/hybrid-ndr-tls.xml:ro
+      - ../internal-tls/clickhouse-entrypoint.sh:/opt/hybrid-ndr/clickhouse-entrypoint.sh:ro
+
+  minio:
+    command: server /data --console-address :9001
+    volumes:
+      - minio-data:/data
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/root/.minio/certs/CAs/ca-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-cert.pem:/root/.minio/certs/public.crt:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-key.pem:/root/.minio/certs/private.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/root/.minio/certs/CAs/ca-cert.pem", "https://127.0.0.1:9000/minio/health/ready"]
+
+  minio-init:
+    volumes:
+      - ../internal-tls/minio-init-override.sh:/opt/hybrid-ndr/initialize-buckets.sh:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/tmp/.mc/certs/CAs/internal-ca.pem:ro
+    # The CA bind mount makes docker create /tmp/.mc as root-owned; mc runs as
+    # UID 65534 and needs a writable config dir, so back it with a tmpfs (the
+    # deeper CA mount is still applied on top of it).
+    tmpfs: [/tmp/.mc]
+
+  local-api:
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CLICKHOUSE_URL: https://clickhouse:8443
+      MINIO_ENDPOINT: https://minio:9000
+      PERSISTENCE_CA_FILE: /run/internal-tls/ca-cert.pem
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  detection-engine:
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CLICKHOUSE_URL: https://clickhouse:8443
+      PERSISTENCE_CA_FILE: /run/internal-tls/ca-cert.pem
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  operations-agent:
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CLICKHOUSE_URL: https://clickhouse:8443
+      MINIO_ENDPOINT: https://minio:9000
+      PERSISTENCE_CA_FILE: /run/internal-tls/ca-cert.pem
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  vector:
+    volumes:
+      - ../internal-tls/vector-tls.yaml:/etc/vector/vector.yaml:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  grafana:
+    volumes:
+      - ../internal-tls/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  postgres-exporter:
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB}?sslmode=verify-full
+      DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD}
+    volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro

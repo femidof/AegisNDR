@@ -1,0 +1,120 @@
+groups:
+  - name: hybrid-ndr-health
+    interval: 30s
+    rules:
+      - alert: HybridNDRServiceUnavailable
+        expr: probe_success{job=~"service-health.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Hybrid NDR service probe failed"
+          description: "{{ $labels.instance }} has failed health probes for two minutes."
+
+      - alert: HybridNDRIngestionStopped
+        expr: up{job="vector"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vector ingestion metrics are unavailable"
+          description: "Prometheus cannot scrape the Vector ingestion pipeline."
+
+      - alert: HybridNDRIngestionErrors
+        expr: sum(increase(vector_component_errors_total[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The ingestion pipeline is reporting errors"
+          description: "Vector components recorded errors during the last ten minutes."
+
+      - alert: HybridNDRPostgresUnavailable
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is unavailable"
+          description: "The PostgreSQL exporter cannot query product state."
+
+      - alert: HybridNDRMinioUnavailable
+        expr: up{job="minio"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MinIO metrics are unavailable"
+          description: "Prometheus cannot scrape the evidence object store."
+
+      - alert: HybridNDROperationsUnavailable
+        expr: hybrid_ndr_operations_up == 0 or up{job="operations-agent"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Customer operations evidence is unavailable"
+          description: "The customer-local operations agent is degraded or cannot be scraped."
+
+      - alert: HybridNDRIngestionLagHigh
+        expr: hybrid_ndr_ingestion_lag_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sensor ingestion is delayed"
+          description: "{{ $labels.source }} events have been delayed for more than two minutes."
+
+      - alert: HybridNDRSensorStale
+        expr: hybrid_ndr_sensor_last_seen_age_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sensor state is stale"
+          description: "{{ $labels.sensor_type }} has not reported current state."
+
+      - alert: HybridNDRHourlyDetectorJobStale
+        expr: hybrid_ndr_detection_job_fresh{job="baseline-hourly"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hourly detector baseline refresh is stale"
+          description: "The local hourly baseline job has not completed within two hours."
+
+      - alert: HybridNDRDailyDetectorJobStale
+        expr: hybrid_ndr_detection_job_fresh{job="model-retraining-daily"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily detector retraining is stale"
+          description: "The local statistical model retraining job has not completed within two days."
+
+      - alert: HybridNDRRetentionFailed
+        expr: hybrid_ndr_retention_job_success == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily retention job failed"
+          description: "Customer-local ClickHouse/PostgreSQL retention did not complete successfully."
+
+      - alert: HybridNDRStorageCapacityHigh
+        expr: 100 * minio_cluster_usage_total_bytes / clamp_min(minio_cluster_capacity_raw_total_bytes, 1) > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Evidence storage is nearing capacity"
+          description: "The local MinIO evidence store has exceeded 85 percent utilization."
+
+      - alert: HybridNDRTelemetryBoundaryChanged
+        expr: hybrid_ndr_telemetry_external_exporters != 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "External telemetry exporter detected"
+          description: "Operational telemetry must remain inside the customer data plane."

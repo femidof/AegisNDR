@@ -1,0 +1,28 @@
+# Local environment and secrets — never track these.
+# Only .env.example files are committed as documented templates.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.csr
+
+# Local runtime state (databases, generated CA/certificates, identity, logs).
+.runtime/
+.data/
+dist/
+node_modules/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Build outputs and logs
+*.log
+.vite/
+coverage/
+
+# Editor and OS noise
+.DS_Store
+*.swp

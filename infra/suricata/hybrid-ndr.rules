@@ -1,0 +1,2 @@
+alert http any any -> any any (msg:"HYBRID NDR deterministic HTTP sensor acceptance"; flow:established,to_server; http.uri; content:"/hybrid-ndr-sensor-acceptance"; sid:9900001; rev:1;)
+alert dns any any -> any any (msg:"HYBRID NDR deterministic DNS sensor acceptance"; dns.query; content:"sensor-acceptance.hybrid-ndr.test"; nocase; sid:9900002; rev:1;)

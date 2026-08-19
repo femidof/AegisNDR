@@ -1,0 +1,317 @@
+{
+  "oidc": {
+    "signing_key_algorithm": "RSA",
+    "session_bound_refresh_tokens": true
+  },
+  "api_resources": {
+    "local_api": {
+      "name": "AegisNDR Local API",
+      "indicator": "https://hybrid-ndr.local/api",
+      "access_token_ttl": 900,
+      "scopes": {
+        "alerts:read": "Read alerts",
+        "alerts:update": "Triage and update alerts",
+        "events:search": "Search normalized network events",
+        "investigations:create": "Start or retry investigations",
+        "investigations:read": "Read investigation results",
+        "cases:create": "Create incident cases",
+        "cases:update": "Update incident cases and comments",
+        "evidence:read": "Read local evidence referenced by an alert or investigation",
+        "evidence:export": "Export approved evidence from the customer environment",
+        "transmissions:read": "Inspect the model transmission ledger",
+        "rules:read": "Read detection rules",
+        "rules:manage": "Manage detection rules",
+        "integrations:manage": "Manage customer integrations",
+        "deployments:manage": "Manage deployment and sensor settings",
+        "users:manage": "Manage organization members and assignments",
+        "audit:read": "Read the immutable audit trail",
+        "response:approve": "Approve a response recommendation",
+        "model-policy:manage": "Manage the local model privacy policy",
+        "events:write": "Ingest normalized network events",
+        "sensors:write": "Publish local sensor state"
+      }
+    },
+    "control_api": {
+      "name": "AegisNDR Control API",
+      "indicator": "https://hybrid-ndr.cloud/api",
+      "access_token_ttl": 900,
+      "scopes": {
+        "organizations:read": "Read customer organization metadata",
+        "organizations:manage": "Manage customer organizations",
+        "users:read": "Read organization members",
+        "users:manage": "Manage organization members",
+        "deployments:read": "Read deployment status and health",
+        "deployments:manage": "Create and manage deployments",
+        "entitlements:read": "Read subscriptions and entitlements",
+        "entitlements:manage": "Manage subscriptions and entitlements",
+        "policy:read": "Read tenant policy",
+        "policy:manage": "Manage tenant policy",
+        "usage:read": "Read aggregate product usage",
+        "updates:read": "Read software and content update status",
+        "updates:manage": "Manage update channels and approvals",
+        "support:read": "Read support metadata",
+        "support:manage": "Manage support metadata",
+        "audit:read": "Read control-plane audit records"
+      }
+    }
+  },
+  "applications": {
+    "local_dashboard": {
+      "name": "AegisNDR Investigation Notebook",
+      "description": "Customer-resident analyst dashboard",
+      "type": "SPA",
+      "resource": "local_api",
+      "redirect_uris": [
+        "http://localhost:4173/callback"
+      ],
+      "post_logout_redirect_uris": [
+        "http://localhost:4173"
+      ],
+      "cors_allowed_origins": [
+        "http://localhost:4173"
+      ],
+      "environment_overrides": {
+        "origin": "DASHBOARD_PUBLIC_ORIGIN",
+        "redirect_uri": "LOGTO_REDIRECT_URI",
+        "post_logout_redirect_uri": "LOGTO_POST_LOGOUT_URI"
+      },
+      "refresh_token_ttl_days": 1,
+      "rotate_refresh_token": true,
+      "max_allowed_grants": 5
+    },
+    "cloud_portal": {
+      "name": "AegisNDR Cloud Management Portal",
+      "description": "Vendor control-plane organization and deployment console",
+      "type": "SPA",
+      "resource": "control_api",
+      "redirect_uris": [
+        "http://localhost:4180/callback"
+      ],
+      "post_logout_redirect_uris": [
+        "http://localhost:4180"
+      ],
+      "cors_allowed_origins": [
+        "http://localhost:4180"
+      ],
+      "environment_overrides": {
+        "origin": "CLOUD_PORTAL_PUBLIC_ORIGIN",
+        "redirect_uri": "LOGTO_CLOUD_PORTAL_REDIRECT_URI",
+        "post_logout_redirect_uri": "LOGTO_CLOUD_PORTAL_POST_LOGOUT_URI"
+      },
+      "refresh_token_ttl_days": 1,
+      "rotate_refresh_token": true,
+      "max_allowed_grants": 5
+    }
+  },
+  "deployment_application": {
+    "name": "AegisNDR Deployment Agent",
+    "description": "Customer-resident sensor, ingestion, and deployment client",
+    "type": "MachineToMachine",
+    "organization_role": "deployment_agent"
+  },
+  "organization": {
+    "name": "AegisNDR Demo Organization",
+    "description": "Deterministic local-pilot organization",
+    "tenant_id": "11111111-1111-4111-8111-111111111111",
+    "deployment_ids": [
+      "22222222-2222-4222-8222-222222222222"
+    ],
+    "require_mfa": false
+  },
+  "organization_roles": {
+    "organization_owner": {
+      "description": "Billing, deployments, users, and policy administration",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "alerts:update",
+          "events:search",
+          "investigations:create",
+          "investigations:read",
+          "cases:create",
+          "cases:update",
+          "evidence:read",
+          "evidence:export",
+          "transmissions:read",
+          "rules:read",
+          "rules:manage",
+          "integrations:manage",
+          "deployments:manage",
+          "users:manage",
+          "audit:read",
+          "response:approve",
+          "model-policy:manage"
+        ],
+        "control_api": [
+          "organizations:read",
+          "organizations:manage",
+          "users:read",
+          "users:manage",
+          "deployments:read",
+          "deployments:manage",
+          "entitlements:read",
+          "entitlements:manage",
+          "policy:read",
+          "policy:manage",
+          "usage:read",
+          "updates:read",
+          "updates:manage",
+          "support:read",
+          "support:manage",
+          "audit:read"
+        ]
+      }
+    },
+    "security_admin": {
+      "description": "Sensors, rules, integrations, retention, and security policy",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "alerts:update",
+          "events:search",
+          "investigations:read",
+          "evidence:read",
+          "evidence:export",
+          "transmissions:read",
+          "rules:read",
+          "rules:manage",
+          "integrations:manage",
+          "deployments:manage",
+          "audit:read",
+          "model-policy:manage"
+        ],
+        "control_api": [
+          "organizations:read",
+          "deployments:read",
+          "deployments:manage",
+          "entitlements:read",
+          "policy:read",
+          "policy:manage",
+          "usage:read",
+          "updates:read",
+          "updates:manage",
+          "support:read",
+          "audit:read"
+        ]
+      }
+    },
+    "soc_manager": {
+      "description": "Cases, assignments, reporting, and response approvals",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "alerts:update",
+          "events:search",
+          "investigations:create",
+          "investigations:read",
+          "cases:create",
+          "cases:update",
+          "evidence:read",
+          "evidence:export",
+          "transmissions:read",
+          "response:approve"
+        ],
+        "control_api": [
+          "organizations:read",
+          "users:read",
+          "deployments:read",
+          "entitlements:read",
+          "policy:read",
+          "usage:read",
+          "updates:read",
+          "support:read",
+          "audit:read"
+        ]
+      }
+    },
+    "analyst": {
+      "description": "Alerts, investigations, evidence, and cases",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "alerts:update",
+          "events:search",
+          "investigations:create",
+          "investigations:read",
+          "cases:create",
+          "cases:update",
+          "evidence:read",
+          "transmissions:read"
+        ],
+        "control_api": [
+          "organizations:read",
+          "deployments:read",
+          "entitlements:read",
+          "policy:read",
+          "updates:read",
+          "support:read"
+        ]
+      }
+    },
+    "auditor": {
+      "description": "Read-only audit, policy, evidence, and transmission access",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "investigations:read",
+          "evidence:read",
+          "transmissions:read",
+          "rules:read",
+          "audit:read"
+        ],
+        "control_api": [
+          "organizations:read",
+          "users:read",
+          "deployments:read",
+          "entitlements:read",
+          "policy:read",
+          "usage:read",
+          "updates:read",
+          "support:read",
+          "audit:read"
+        ]
+      }
+    },
+    "read_only": {
+      "description": "Dashboard, alert, deployment, and policy viewing",
+      "type": "User",
+      "resource_scopes": {
+        "local_api": [
+          "alerts:read",
+          "events:search",
+          "investigations:read"
+        ],
+        "control_api": [
+          "organizations:read",
+          "deployments:read",
+          "entitlements:read",
+          "policy:read",
+          "usage:read",
+          "updates:read",
+          "support:read"
+        ]
+      }
+    },
+    "deployment_agent": {
+      "description": "Deployment health, sensor ingestion, updates, metering, and policy retrieval",
+      "type": "MachineToMachine",
+      "resource_scopes": {
+        "local_api": [
+          "events:write",
+          "sensors:write"
+        ],
+        "control_api": [
+          "deployments:read",
+          "entitlements:read",
+          "policy:read",
+          "updates:read"
+        ]
+      }
+    }
+  }
+}

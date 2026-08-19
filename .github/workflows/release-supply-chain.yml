@@ -1,0 +1,161 @@
+name: signed-release-supply-chain
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer release version
+        required: true
+        type: string
+      channel:
+        description: Customer update channel
+        required: true
+        default: stable
+        type: choice
+        options: [stable, preview, extended]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Check out the reviewed release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate immutable release inputs
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]
+          [[ "$REQUESTED_CHANNEL" =~ ^(stable|preview|extended)$ ]]
+          repository=$(tr '[:upper:]' '[:lower:]' <<<"${GITHUB_REPOSITORY}")
+          printf 'version=%s\nchannel=%s\nrepository=%s\n' \
+            "$REQUESTED_VERSION" "$REQUESTED_CHANNEL" "$repository" >>"$GITHUB_OUTPUT"
+
+      - name: Log in to the release registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install a pinned BuildKit builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9
+
+      - name: Install pinned Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+
+      - name: Build and push the customer Python runtime
+        id: python_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: infra/compose/python.Dockerfile
+          push: true
+          tags: ghcr.io/${{ steps.release.outputs.repository }}/python-runtime:${{ steps.release.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          sbom: true
+
+      - name: Build and push the customer dashboard image
+        id: dashboard_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: infra/compose/dashboard.Dockerfile
+          push: true
+          tags: ghcr.io/${{ steps.release.outputs.repository }}/dashboard:${{ steps.release.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          sbom: true
+
+      - name: Generate reviewable image SBOMs
+        env:
+          PYTHON_IMAGE: ghcr.io/${{ steps.release.outputs.repository }}/python-runtime@${{ steps.python_image.outputs.digest }}
+          DASHBOARD_IMAGE: ghcr.io/${{ steps.release.outputs.repository }}/dashboard@${{ steps.dashboard_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          install -d -m 0755 release/image-sboms
+          syft "$PYTHON_IMAGE" -o cyclonedx-json=release/image-sboms/python-runtime.cdx.json
+          syft "$DASHBOARD_IMAGE" -o cyclonedx-json=release/image-sboms/dashboard.cdx.json
+
+      - name: Keyless-sign images and attest their SBOMs
+        env:
+          PYTHON_IMAGE: ghcr.io/${{ steps.release.outputs.repository }}/python-runtime@${{ steps.python_image.outputs.digest }}
+          DASHBOARD_IMAGE: ghcr.io/${{ steps.release.outputs.repository }}/dashboard@${{ steps.dashboard_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$PYTHON_IMAGE"
+          cosign sign --yes "$DASHBOARD_IMAGE"
+          cosign attest --yes --type cyclonedx --predicate release/image-sboms/python-runtime.cdx.json "$PYTHON_IMAGE"
+          cosign attest --yes --type cyclonedx --predicate release/image-sboms/dashboard.cdx.json "$DASHBOARD_IMAGE"
+
+      - name: Materialize protected offline signing keys
+        env:
+          BUNDLE_SIGNING_KEY: ${{ secrets.RELEASE_BUNDLE_SIGNING_KEY_PEM }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 0700 "$RUNNER_TEMP/hybrid-ndr-signing"
+          printf '%s' "$BUNDLE_SIGNING_KEY" >"$RUNNER_TEMP/hybrid-ndr-signing/bundle.pem"
+          printf '%s' "$UPDATE_SIGNING_KEY" >"$RUNNER_TEMP/hybrid-ndr-signing/update.pem"
+          openssl pkey -in "$RUNNER_TEMP/hybrid-ndr-signing/bundle.pem" -noout
+          openssl pkey -in "$RUNNER_TEMP/hybrid-ndr-signing/update.pem" -noout
+
+      - name: Build the signed, SBOM-bearing, digest-pinned offline release
+        env:
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.updated_at }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          scripts/build-offline-bundle.sh \
+            --output-dir release \
+            --version '${{ steps.release.outputs.version }}' \
+            --signing-key "$RUNNER_TEMP/hybrid-ndr-signing/bundle.pem"
+
+      - name: Create the customer update-agent manifest
+        run: |
+          set -euo pipefail
+          artifact="release/hybrid-ndr-${{ steps.release.outputs.version }}-offline.tar.gz"
+          scripts/create-update-manifest.py \
+            --artifact "$artifact" \
+            --artifact-name "ghcr.io/${{ steps.release.outputs.repository }}/offline-bundle" \
+            --version '${{ steps.release.outputs.version }}' \
+            --channel '${{ steps.release.outputs.channel }}' \
+            --signing-key "$RUNNER_TEMP/hybrid-ndr-signing/update.pem" \
+            --output "release/hybrid-ndr-${{ steps.release.outputs.version }}-update-manifest.json"
+
+      - name: Keyless-sign release artifacts for transparency evidence
+        run: |
+          set -euo pipefail
+          bundle="release/hybrid-ndr-${{ steps.release.outputs.version }}-offline.tar.gz"
+          manifest="release/hybrid-ndr-${{ steps.release.outputs.version }}-update-manifest.json"
+          cosign sign-blob --yes --bundle "${bundle}.cosign.bundle.json" "$bundle"
+          cosign sign-blob --yes --bundle "${manifest}.cosign.bundle.json" "$manifest"
+
+      - name: Remove in-job private-key material
+        if: always()
+        run: |
+          set -euo pipefail
+          find "$RUNNER_TEMP/hybrid-ndr-signing" -type f -exec shred -u -- {} + 2>/dev/null || true
+          rmdir "$RUNNER_TEMP/hybrid-ndr-signing" 2>/dev/null || true
+
+      - name: Publish immutable release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hybrid-ndr-${{ steps.release.outputs.version }}-signed-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 90

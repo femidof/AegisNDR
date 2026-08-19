@@ -1,0 +1,174 @@
+data_dir: /var/lib/vector
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+  playground: false
+
+# read_from: beginning is required so the offline sensor fixture's freshly
+# replayed eve.json is ingested on a fresh volume. Duplicate prevention on
+# restarts relies on the persistent vector-data volume (fingerprints and file
+# offsets live in data_dir): if that volume is ever lost, Vector re-reads the
+# sensor logs from the start. For the bounded offline fixture that is a
+# one-time replay of the deterministic PCAP; live deployments must keep the
+# vector-data volume persistent to avoid re-ingesting months of capture logs.
+
+sources:
+  suricata:
+    type: file
+    include:
+      - /var/log/sensors/suricata/eve.json
+    read_from: beginning
+    glob_minimum_cooldown_ms: 1000
+    fingerprint:
+      strategy: checksum
+
+  zeek:
+    type: file
+    include:
+      - /var/log/sensors/zeek/*.log
+    exclude:
+      - /var/log/sensors/zeek/reporter.log
+    read_from: beginning
+    glob_minimum_cooldown_ms: 1000
+    fingerprint:
+      strategy: checksum
+
+  internal_metrics:
+    type: internal_metrics
+
+transforms:
+  normalize_suricata:
+    type: remap
+    inputs: [suricata]
+    drop_on_error: true
+    reroute_dropped: true
+    source: |
+      parsed = parse_json!(.message)
+      source_file = to_string(.file) ?? "/var/log/sensors/suricata/eve.json"
+      source_ip = to_string(parsed.src_ip) ?? ""
+      destination_ip = to_string(parsed.dest_ip) ?? ""
+
+      . = {}
+      .tenant_id = get_env_var!("TENANT_ID")
+      .deployment_id = get_env_var!("DEPLOYMENT_ID")
+      .event_id = uuid_v4()
+      .event_time = parse_timestamp!(to_string!(parsed.timestamp), format: "%+")
+      .ingested_at = now()
+      .source = "suricata"
+      .event_type = if exists(parsed.alert) {
+        "network.alert"
+      } else {
+        "network." + (to_string(parsed.event_type) ?? "event")
+      }
+      .sensor_id = get_env_var!("SURICATA_SENSOR_ID")
+      .community_id = to_string(parsed.community_id) ?? ""
+      # Missing addresses stay empty strings per the NormalizedEvent contract;
+      # storing "::" would create phantom source entities for detection.
+      .src_ip = source_ip
+      .src_port = to_int(parsed.src_port) ?? 0
+      .dst_ip = destination_ip
+      .dst_port = to_int(parsed.dest_port) ?? 0
+      .protocol = downcase(to_string(parsed.proto) ?? "")
+      .duration_ms = 0
+      .bytes_out = to_int(parsed.flow.bytes_toserver) ?? 0
+      .bytes_in = to_int(parsed.flow.bytes_toclient) ?? 0
+      .severity = to_int(parsed.alert.severity) ?? 0
+      .signature = to_string(parsed.alert.signature) ?? ""
+      .raw_reference = source_file + "#flow_id=" + (to_string(parsed.flow_id) ?? "unknown")
+      .raw_event = encode_json(parsed)
+
+  normalize_zeek:
+    type: remap
+    inputs: [zeek]
+    drop_on_error: true
+    reroute_dropped: true
+    source: |
+      parsed = parse_json!(.message)
+      source_file = to_string(.file) ?? "/var/log/sensors/zeek/unknown.log"
+      source_ip = to_string(parsed."id.orig_h") ?? ""
+      destination_ip = to_string(parsed."id.resp_h") ?? ""
+      log_type = if ends_with(source_file, "/conn.log") {
+        "connection"
+      } else if ends_with(source_file, "/dns.log") {
+        "dns"
+      } else if ends_with(source_file, "/http.log") {
+        "http"
+      } else if ends_with(source_file, "/ssl.log") {
+        "tls"
+      } else {
+        "telemetry"
+      }
+      duration_seconds = to_float(parsed.duration) ?? 0.0
+
+      . = {}
+      .tenant_id = get_env_var!("TENANT_ID")
+      .deployment_id = get_env_var!("DEPLOYMENT_ID")
+      .event_id = uuid_v4()
+      .event_time = from_unix_timestamp!(to_int!(parsed.ts), unit: "seconds")
+      .ingested_at = now()
+      .source = "zeek"
+      .event_type = "network." + log_type
+      .sensor_id = get_env_var!("ZEEK_SENSOR_ID")
+      .community_id = to_string(parsed.community_id) ?? ""
+      .src_ip = source_ip
+      .src_port = to_int(parsed."id.orig_p") ?? 0
+      .dst_ip = destination_ip
+      .dst_port = to_int(parsed."id.resp_p") ?? 0
+      .protocol = downcase(to_string(parsed.proto) ?? "")
+      .duration_ms = to_int(duration_seconds * 1000.0)
+      .bytes_out = to_int(parsed.orig_bytes) ?? 0
+      .bytes_in = to_int(parsed.resp_bytes) ?? 0
+      .severity = 0
+      .signature = ""
+      .raw_reference = source_file + "#uid=" + (to_string(parsed.uid) ?? "unknown")
+      .raw_event = encode_json(parsed)
+
+sinks:
+  clickhouse:
+    type: clickhouse
+    inputs: [normalize_suricata, normalize_zeek]
+    # Base Compose uses plaintext HTTP on the internal network by design; the
+    # customer installer applies the internal-TLS overlay
+    # (infra/compose/docker-compose.internal-tls.yml), which swaps this sink
+    # for infra/internal-tls/vector-tls.yaml (https://clickhouse:8443 + pinned CA).
+    endpoint: http://clickhouse:8123
+    database: hybrid_ndr
+    table: network_events
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    auth:
+      strategy: basic
+      user: ${CLICKHOUSE_USER}
+      password: ${CLICKHOUSE_PASSWORD}
+    batch:
+      max_events: 1000
+      timeout_secs: 2
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+
+  normalization_dead_letter:
+    type: file
+    inputs:
+      - normalize_suricata.dropped
+      - normalize_zeek.dropped
+    path: /var/lib/vector/dead-letter-%Y-%m-%d.json
+    encoding:
+      codec: json
+    # Bounded: a sustained normalization failure must not fill the data volume.
+    # The disk buffer caps retained dropped events and drops the newest events
+    # beyond it (the pipeline keeps flowing; the dead-letter stream is
+    # best-effort diagnostics). The file sink itself cannot rotate, so the
+    # buffer is the size bound.
+    buffer:
+      type: disk
+      max_size: 104857600
+      when_full: drop_newest
+
+  prometheus_exporter:
+    type: prometheus_exporter
+    inputs: [internal_metrics]
+    address: 0.0.0.0:9598
