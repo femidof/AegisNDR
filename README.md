@@ -17,6 +17,172 @@ A runnable MVP of a customer-resident Network Detection and Response platform wi
 - Single-node Docker Compose topology for the application plus Suricata, Zeek, Vector, ClickHouse, PostgreSQL, MinIO, Logto, Grafana, and Prometheus.
 - Deterministic demo fixtures and automated unit, integration, security, and tenant-isolation tests.
 
+## System design
+
+AegisNDR separates the **customer data plane** from the **vendor control plane**.
+The customer appliance owns collection, detection, evidence, investigations, and
+the analyst experience. The vendor services manage deployment identity, fleet
+health, entitlements, and update metadata. Docker Compose provides a single-node
+deployment with separate `customer` and `vendor` profiles; the customer installer
+does not install the vendor services on the appliance.
+
+```mermaid
+flowchart LR
+    Traffic["Network traffic / demo PCAP"]
+    Analyst["Analyst"]
+    Operator["Fleet operator"]
+
+    subgraph Customer["Customer environment — data plane"]
+        Sensors["Suricata + Zeek"]
+        Vector["Vector / normalization"]
+        Events[("ClickHouse: events")]
+        Detection["Detection engine"]
+        State[("PostgreSQL: workflow state")]
+        Objects[("MinIO: evidence objects")]
+        UI["Dashboard + Local API"]
+        Runtime["Investigation runtime"]
+        Connector["Deployment connector"]
+        Monitoring["Operations agent / Prometheus / Grafana"]
+    end
+
+    subgraph Vendor["Vendor environment — control plane"]
+        Portal["Cloud console"]
+        Identity["Logto + identity database"]
+        Control["Control API + fleet metadata"]
+        Gateway["Model gateway"]
+    end
+
+    Traffic --> Sensors --> Vector --> Events
+    Events --> Detection --> State
+    Analyst --> UI
+    UI --> Events
+    UI --> State
+    UI --> Objects
+    UI --> Runtime
+    Runtime --> State
+    Monitoring --> Events
+    Monitoring --> State
+    Connector -->|"Outbound enrollment / heartbeat / usage"| Control
+    Operator --> Portal --> Control
+    Portal --> Identity
+    Runtime -.->|"Optional external assessment boundary; see below"| Gateway
+    Gateway -.-> Provider["Policy-approved model provider"]
+```
+
+The dotted assessment path describes the external model integration boundary.
+The current Local API constructs an in-process `ModelGateway` with
+`DeterministicAssessmentProvider`; deploying the standalone gateway does not
+automatically connect local investigations to an external provider. The gateway
+service has its own provider routing and privacy checks.
+
+### Design decisions
+
+- **Local operation first:** ingestion and detection do not depend on an LLM or
+  a working vendor connection. Local findings and stored evidence remain available
+  when an external assessment is unavailable.
+- **Separate management and evidence paths:** the deployment connector sends
+  fleet metadata and aggregate usage. It has no connection to the private
+  `local-data` Docker network. Evidence assessment uses a separate, minimized
+  package boundary.
+- **Storage by workload:** ClickHouse handles event analytics, PostgreSQL holds
+  transactional workflow state, and MinIO holds evidence objects. Named volumes
+  preserve these stores across container replacement.
+- **Explicit deployment limits:** this is a single-node topology. Restart
+  policies improve recovery after process or Docker restarts; they do not provide
+  host redundancy, backups, or automatic recovery from every unhealthy state.
+
+## Architecture
+
+### Components and responsibilities
+
+| Component | Location | Responsibility |
+|---|---|---|
+| Suricata and Zeek | Customer | Network signatures and protocol metadata; deterministic PCAP replay in demo mode |
+| Vector | Customer | Normalize sensor logs and checkpoint delivery to ClickHouse |
+| Detection engine | Customer | Rules, baselines, alert generation, deduplication, and persisted progress |
+| ClickHouse | Customer | Searchable network events and analytical queries |
+| PostgreSQL | Customer | Alerts, cases, investigations, policies, and detection state |
+| MinIO | Customer | Evidence, packet captures, exports, and support objects |
+| Dashboard and Local API | Customer | Analyst workflows, tenant authorization, evidence access, and audit |
+| Investigation runtime | Customer, inside Local API | Bounded evidence tools, redaction, assessment validation, and citations |
+| Deployment connector | Customer | Enrollment, authenticated heartbeats, cached configuration, and metadata exchange |
+| Update agent | Customer | Signed release manifest and artifact integrity checks; host installation is a separate installer action |
+| Operations and observability services | Customer | Store health, ingestion lag, detection progress, retention, metrics, and dashboards |
+| Logto and identity PostgreSQL | Vendor | OIDC, organizations, roles, and identity administration |
+| Cloud console and Control API | Vendor | Organization-scoped fleet management, enrollment, entitlements, and policy/update metadata |
+| Model gateway | Vendor | Approved assessment routing, privacy-policy enforcement, and usage metering |
+
+### Main data flows
+
+1. **Collect and detect:** sensors emit logs; Vector normalizes and ingests events
+   into ClickHouse. The detection engine reads events, evaluates rules and
+   baselines, and persists alerts and progress in PostgreSQL. Alert deduplication
+   and checkpoint updates use transactional persistence.
+2. **Investigate:** an authorized analyst opens an alert through the Local API.
+   The investigation runtime gathers allowlisted local evidence, redacts and
+   minimizes its assessment package, and validates structured findings and
+   evidence references before recording the result. Current demo assessments
+   use the deterministic provider described above.
+3. **Manage the fleet:** the appliance enrolls with a single-use token and obtains
+   a deployment identity. Subsequent connector requests use that identity to
+   exchange health, usage, entitlement, and configuration metadata. The cloud
+   console exposes fleet management without providing customer event searches.
+4. **Observe and recover:** local monitoring checks service availability and
+   processing progress. Persistent services use `restart: unless-stopped`;
+   initialization jobs remain one-shot. Operators use health checks and metrics
+   to distinguish a running process from a functioning ingestion pipeline.
+
+### Trust boundaries and failure behavior
+
+- Production analyst access uses verified JWTs and tenant/deployment permissions.
+  Machine credentials are restricted to machine endpoints. Standalone installation
+  supports local identity without a vendor control plane.
+- The production HTTPS overlay exposes the dashboard, `/api/`, and `/grafana/`
+  through a host-locked TLS origin. Databases and object storage stay private;
+  the base Compose configuration is for explicit local development.
+- Raw events and evidence remain customer-local. An external assessment may
+  receive only a policy-approved minimized package. The model gateway fails
+  closed when required regional or zero-retention policy cannot be verified.
+- Vendor unavailability does not stop local detection. Assessment failures retain
+  local findings; cached entitlement policy governs restricted model/update
+  operations. Persisted ingestion and detection checkpoints support resumption.
+- Restart policies take effect when a container exits; Docker does not restart a
+  container solely because its health check reports `unhealthy`. Volume backups,
+  restore procedures, and host capacity remain operational responsibilities.
+
+### Planned blocking and endpoint isolation
+
+**Design direction — not implemented or enabled in this MVP.** Firewall blocking,
+EDR isolation, and future endpoint agents should share a customer-local response
+workflow, with enforcement performed by the relevant integration:
+
+```mermaid
+flowchart LR
+    Evidence["Detection + evidence"] --> Asset["Resolve stable asset identity"]
+    Asset --> Policy["Deterministic response policy"]
+    Policy --> Authorization["Human approval or bounded automatic authorization"]
+    Authorization --> Queue["Persist action + transactional outbox"]
+    Queue --> Worker["Local response worker"]
+    Worker --> Firewall["Firewall adapter"]
+    Worker --> EDR["EDR adapter"]
+    Worker --> Agent["Endpoint agent adapter"]
+    Firewall --> Verify["Verify effective outcome"]
+    EDR --> Verify
+    Agent --> Verify
+    Verify --> Recovery["Timed release / rollback + audit"]
+```
+
+The response design should default to simulation, then introduce approved actions
+before narrowly scoped autonomy. It needs stable device identity, tenant-scoped
+authorization, critical-asset exclusions, action limits, an emergency stop,
+idempotent execution, and reconciliation of uncertain outcomes. Model output
+alone must not authorize enforcement. A passive network sensor requires an
+enforcement integration to block traffic or isolate a device.
+
+For additional context, see the [architecture notes](docs/architecture/architecture.md),
+[Compose configuration](infra/compose/docker-compose.yml), and
+[customer installation guide](docs/deployment/customer-installer.md).
+
 ## Quick start
 
 ### Local product UI
@@ -65,7 +231,7 @@ docker compose -f infra/compose/docker-compose.yml \
 ```
 
 That base-only path explicitly enables development HTTP and publishes ports
-`4173`, `8080`, and `3001`; keep it on loopback or an isolated test network.
+`4173` and `8080`; keep it on loopback or an isolated test network.
 Production installation always adds `docker-compose.https.yml`, removes those
 ports, and exposes a host-locked TLS origin on ports 80/443 with the dashboard
 at `/`, Local API at `/api/`, and Grafana at `/grafana/`. The installer can
