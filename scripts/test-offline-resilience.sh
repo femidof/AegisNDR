@@ -23,7 +23,11 @@ fi
 cd "$repo_root"
 
 "${compose[@]}" config --quiet
-"${compose[@]}" up -d --build
+if ! "${compose[@]}" up -d --build; then
+  "${compose[@]}" ps --all >&2
+  "${compose[@]}" logs --no-color --tail=60 suricata zeek >&2
+  exit 1
+fi
 
 required=(postgres clickhouse minio suricata zeek vector detection-engine operations-agent local-api dashboard prometheus grafana deployment-connector)
 deadline=$((SECONDS + 240))
