@@ -50,6 +50,11 @@ for service in "${required[@]}"; do
   done
 done
 
+# Exercise concurrent alert claims against PostgreSQL, including FK enforcement.
+"${compose[@]}" run --rm --no-deps --entrypoint python3 \
+  -e RUN_POSTGRES_DETECTION_TESTS=1 -v "$repo_root/tests:/app/tests:ro" local-api \
+  -m unittest discover -s tests/integration -p test_production_persistence.py
+
 # Prove the expected fixture records arrived from BOTH sensors, rather than
 # relying on a total that changes with diagnostic/stats events in sensor images.
 fixture_query="SELECT

@@ -298,6 +298,7 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
                     PRIMARY KEY (tenant_id, deployment_id, fingerprint),
                     FOREIGN KEY (tenant_id, deployment_id, alert_id)
                       REFERENCES {self._table('alerts')}(tenant_id, deployment_id, alert_id)
+                      DEFERRABLE INITIALLY DEFERRED
                 )""",
                 f"""CREATE TABLE IF NOT EXISTS {self._table('alert_evidence')} (
                     tenant_id text NOT NULL,
@@ -376,6 +377,11 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
                 )""",
                 f"CREATE INDEX IF NOT EXISTS support_bundles_created "
                 f"ON {self._table('support_bundles')} (tenant_id, deployment_id, created_at DESC)",
+            ]),
+            (4, "defer alert fingerprint foreign key until transaction commit", [
+                f"ALTER TABLE {self._table('detection_alert_keys')} "
+                "ALTER CONSTRAINT detection_alert_keys_tenant_id_deployment_id_alert_id_fkey "
+                "DEFERRABLE INITIALLY DEFERRED",
             ]),
         )
 
@@ -995,7 +1001,9 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
         )
         payload = alert.to_dict()
         with self._transaction() as cursor:
-            # The fingerprint mapping is the idempotency guard. Insert it first
+            # The FK is deferred until commit so this claim and its parent alert
+            # can be created atomically. The fingerprint is the idempotency guard.
+            # Insert it first
             # and treat its rowcount as authoritative: if a concurrent call
             # already registered this fingerprint (with the same deterministic
             # alert_id, or a different one), this call must NOT insert its own

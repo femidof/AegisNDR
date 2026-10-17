@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -139,6 +140,68 @@ class ProductionPersistenceIntegrationTests(unittest.TestCase):
         baseline = store.get_baseline(tenant_id, deployment_id, "10.42.0.7")
         self.assertGreaterEqual(baseline["event_count"], 1)
         self.assertTrue(persistence.readiness()["ready"])
+
+
+@unittest.skipUnless(
+    os.environ.get("RUN_POSTGRES_DETECTION_TESTS") == "1",
+    "set RUN_POSTGRES_DETECTION_TESTS=1 with a test PostgreSQL database",
+)
+class PostgresDetectionTransactionTests(unittest.TestCase):
+    def test_concurrent_claims_commit_one_alert_and_reject_orphans(self):
+        import psycopg
+        from hybrid_ndr_storage.adapters import PostgresMetadataAdapter
+        from hybrid_ndr_storage.tls import postgres_dsn_with_tls
+
+        dsn = os.environ["POSTGRES_URL"]
+        if os.environ.get("PERSISTENCE_CA_FILE"):
+            dsn = postgres_dsn_with_tls(dsn, os.environ["PERSISTENCE_CA_FILE"])
+        adapter = PostgresMetadataAdapter(dsn)
+        adapter.ensure_detection_schema()
+        tenant, deployment, event_id = (str(uuid.uuid4()) for _ in range(3))
+        evidence = NormalizedEvent(
+            tenant_id=tenant, deployment_id=deployment, event_id=event_id,
+            event_time=utc_now(), source="integration-test", event_type="network.alert",
+            sensor_id="test-sensor", src_ip="10.42.0.7", protocol="tcp",
+            community_id="1:NUBC91w+GPeq1tG0rz1XG7ehnhE=",
+        )
+        detection = DetectionResult(
+            detector_id="test-detector", entity_type="host", entity_id="10.42.0.7",
+            severity="high", score=0.9, evidence_ids=(event_id,), feature_values={},
+            baseline_values={}, title="Transactional detector regression",
+        )
+        fingerprint = uuid.uuid4().hex * 2
+        try:
+            def claim(_index):
+                return adapter.save_detected_alert(
+                    tenant, deployment, detection, [evidence], fingerprint=fingerprint,
+                    alert_id=str(uuid.uuid4()), created_at=utc_now(),
+                )
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results = list(pool.map(claim, range(4)))
+            self.assertEqual(sum(created for created, _payload in results), 1)
+            self.assertEqual(len({payload["alert_id"] for _created, payload in results}), 1)
+            with psycopg.connect(dsn) as connection:
+                counts = [connection.execute(
+                    f"SELECT count(*) FROM local_state.{table} WHERE tenant_id=%s AND deployment_id=%s",
+                    (tenant, deployment),
+                ).fetchone()[0] for table in ("alerts", "detection_alert_keys", "alert_evidence")]
+            self.assertEqual(counts, [1, 1, 1])
+            # Integrity still applies at commit: a claim without its parent fails.
+            with self.assertRaises(psycopg.errors.ForeignKeyViolation):
+                with adapter._transaction() as cursor:
+                    cursor.execute(
+                        "INSERT INTO local_state.detection_alert_keys "
+                        "(tenant_id,deployment_id,fingerprint,alert_id,created_at) VALUES (%s,%s,%s,%s,now())",
+                        (tenant, deployment, uuid.uuid4().hex * 2, str(uuid.uuid4())),
+                    )
+        finally:
+            with psycopg.connect(dsn) as connection:
+                for table in ("alert_evidence", "detection_alert_keys", "alerts"):
+                    connection.execute(
+                        f"DELETE FROM local_state.{table} WHERE tenant_id=%s AND deployment_id=%s",
+                        (tenant, deployment),
+                    )
 
 
 if __name__ == "__main__":

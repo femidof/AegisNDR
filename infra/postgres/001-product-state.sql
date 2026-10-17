@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS local_state.detection_alert_keys (
     PRIMARY KEY (tenant_id, deployment_id, fingerprint),
     FOREIGN KEY (tenant_id, deployment_id, alert_id)
         REFERENCES local_state.alerts(tenant_id, deployment_id, alert_id)
+        DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE IF NOT EXISTS local_state.alert_evidence (
