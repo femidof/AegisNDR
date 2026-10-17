@@ -23,9 +23,10 @@ fi
 cd "$repo_root"
 
 "${compose[@]}" config --quiet
+"${compose[@]}" run --rm --no-deps vector validate --skip-healthchecks /etc/vector/vector.yaml
 if ! "${compose[@]}" up -d --build; then
   "${compose[@]}" ps --all >&2
-  "${compose[@]}" logs --no-color --tail=60 suricata zeek >&2
+  "${compose[@]}" logs --no-color --tail=60 suricata zeek vector operations-agent detection-engine >&2
   exit 1
 fi
 

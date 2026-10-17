@@ -158,14 +158,11 @@ sinks:
     path: /var/lib/vector/dead-letter-%Y-%m-%d.json
     encoding:
       codec: json
-    # Bounded: a sustained normalization failure must not fill the data volume.
-    # The disk buffer caps retained dropped events and drops the newest events
-    # beyond it (the pipeline keeps flowing; the dead-letter stream is
-    # best-effort diagnostics). The file sink itself cannot rotate, so the
-    # buffer is the size bound.
+    # Bound queued diagnostics above Vector's minimum disk-buffer size.
+    # Written daily files still require a separate retention policy.
     buffer:
       type: disk
-      max_size: 104857600
+      max_size: 314572800
       when_full: drop_newest
 
   prometheus_exporter:
