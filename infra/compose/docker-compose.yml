@@ -195,9 +195,13 @@ services:
       - |
         mkdir -p /var/log/sensors/suricata
         chown -R 998:998 /var/log/sensors/suricata
-        exec python3 /opt/hybrid-ndr/generate_sensor_pcap.py \
-          /var/lib/sensor-fixtures/sensor-acceptance.pcap --verify-sha256 \
-          7a85d9ab26cf52dd46890f38b48b4dfddefed7d6ff1653e1dc8915cb4a3457ca
+        exec "$$@"
+      - sensor-fixture
+      - python3
+      - /opt/hybrid-ndr/generate_sensor_pcap.py
+      - /var/lib/sensor-fixtures/sensor-acceptance.pcap
+      - --verify-sha256
+      - 7a85d9ab26cf52dd46890f38b48b4dfddefed7d6ff1653e1dc8915cb4a3457ca
     volumes:
       - sensor-fixtures:/var/lib/sensor-fixtures
       - sensor-logs:/var/log/sensors
