@@ -1,0 +1,20 @@
+# Test-only source builds. Production release images remain independently pinned.
+services:
+  minio:
+    image: hybrid-ndr-ci/minio:RELEASE.2025-04-22T22-12-26Z
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: infra/compose/minio-ci.Dockerfile
+      args:
+        COMPONENT: minio
+        RELEASE: RELEASE.2025-04-22T22-12-26Z
+  minio-init:
+    image: hybrid-ndr-ci/mc:RELEASE.2025-04-16T18-13-26Z
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: infra/compose/minio-ci.Dockerfile
+      args:
+        COMPONENT: mc
+        RELEASE: RELEASE.2025-04-16T18-13-26Z

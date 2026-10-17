@@ -76,4 +76,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Run the offline resilience acceptance gate
+        env:
+          COMPOSE_TEST_OVERRIDE: infra/compose/docker-compose.ci.yml
         run: bash scripts/test-offline-resilience.sh

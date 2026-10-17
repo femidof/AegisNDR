@@ -16,6 +16,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="$repo_root/infra/compose/docker-compose.yml"
 env_file=${ENV_FILE:-$repo_root/infra/compose/.env.example}
 compose=(docker compose -f "$compose_file" --env-file "$env_file" --profile customer)
+if [[ -n "${COMPOSE_TEST_OVERRIDE:-}" ]]; then
+  compose+=(-f "$COMPOSE_TEST_OVERRIDE")
+fi
 
 cd "$repo_root"
 
