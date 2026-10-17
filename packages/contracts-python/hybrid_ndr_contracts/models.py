@@ -23,9 +23,9 @@ ALLOWED_ACTIONS = frozenset(
     }
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$")
-# Zeek V1 community IDs are "1:" followed by 27 base64 characters (20 bytes,
-# no padding). Both the standard and URL-safe alphabets are accepted.
-_COMMUNITY_ID = re.compile(r"^1:[A-Za-z0-9+/_-]{27}$")
+# V1 community IDs encode a 20-byte hash. Sensors emit a trailing "=";
+# retain support for existing unpadded IDs and URL-safe alphabets.
+_COMMUNITY_ID = re.compile(r"^1:[A-Za-z0-9+/_-]{27}=?$")
 # Protocol labels are short lowercase tokens (tcp, udp, dns, tls, ...).
 _PROTOCOL = re.compile(r"^[a-z][a-z0-9+-]{0,15}$")
 
@@ -123,7 +123,7 @@ class NormalizedEvent:
                     raise ValidationError(f"{name} must be an IPv4 or IPv6 address") from exc
         if self.community_id and not _COMMUNITY_ID.fullmatch(self.community_id):
             raise ValidationError(
-                "community_id must be empty or a valid V1 community ID (1: followed by 27 base64 characters)"
+                "community_id must be empty or a valid V1 community ID (27 base64 characters with optional '=' padding)"
             )
         if self.protocol and not _PROTOCOL.fullmatch(self.protocol):
             raise ValidationError("protocol must be empty or a short lowercase protocol token")

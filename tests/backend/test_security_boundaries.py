@@ -65,10 +65,19 @@ class BoundaryTests(unittest.TestCase):
         return NormalizedEvent.from_dict(base)
 
     def test_community_id_must_be_empty_or_valid_v1(self):
-        valid = self._event(community_id="1:AAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        self.assertEqual(valid.community_id, "1:AAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        for community_id in (
+            "1:AAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "1:NUBC91w+GPeq1tG0rz1XG7ehnhE=",
+            "1:02EV2nb9IuJWDmx/YLgp5Xe/CVo=",
+        ):
+            with self.subTest(community_id=community_id):
+                self.assertEqual(self._event(community_id=community_id).community_id, community_id)
         self.assertEqual(self._event().community_id, "")
-        for invalid in ("demo", "1:demo", "1:short", "2:AAAAAAAAAAAAAAAAAAAAAAAAAAA", "1:AAAA AAAAAAAAAAAAAAAAAAAAA"):
+        for invalid in (
+            "demo", "1:demo", "1:short", "2:AAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "1:AAAA AAAAAAAAAAAAAAAAAAAAA", "1:AAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            "1:AAAAAAAAAAAA=AAAAAAAAAAAAAA",
+        ):
             with self.subTest(community_id=invalid):
                 with self.assertRaises(ValidationError):
                     self._event(community_id=invalid)
