@@ -178,12 +178,25 @@ def _read_key_values(path: Path, required: set[str]) -> dict[str, str]:
         if "=" not in raw:
             raise UpdateRejected("state_invalid", "Installed release state is malformed.")
         key, value = raw.split("=", 1)
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key):
+            raise UpdateRejected("state_invalid", "Installed release state contains an invalid key.")
+        if len(value) > 4096:
+            raise UpdateRejected("state_invalid", "Installed release state value is too long.")
         if key in result:
             raise UpdateRejected("state_invalid", "Installed release state contains a duplicate key.")
         result[key] = value
     if not required <= set(result):
         raise UpdateRejected("state_incomplete", "Installed release state is incomplete.")
     return result
+
+
+def _confined(path: Path, root: Path, *, label: str) -> Path:
+    """Resolve symlinks and require containment under root (enterprise path confinement)."""
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise UpdateRejected("state_invalid", f"The installed {label} escapes its permitted directory.")
+    return resolved
 
 
 def _safe_archive_name(name: str) -> PurePosixPath:
@@ -653,9 +666,28 @@ class UpdateAgent:
         capture = environment["CAPTURE_INTERFACE"]
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", capture):
             raise UpdateRejected("state_invalid", "The installed capture interface is invalid.")
-        project = Path(state["PROJECT_DIR"]).resolve()
+        bind_address = environment["CUSTOMER_BIND_ADDRESS"]
+        lan_host = environment["CUSTOMER_LAN_HOST"]
+        try:
+            import ipaddress as _ipaddress
+
+            _ipaddress.IPv4Address(bind_address)
+        except ValueError as exc:
+            raise UpdateRejected("state_invalid", "The installed bind address is invalid.") from exc
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", lan_host):
+            raise UpdateRejected("state_invalid", "The installed LAN host is invalid.")
+        project_raw = Path(state["PROJECT_DIR"])
+        if not project_raw.is_absolute():
+            raise UpdateRejected("state_invalid", "The installed project directory must be absolute.")
+        project = project_raw.resolve()
+        # Enterprise: compose files must live inside the release's infra/compose
+        # directory so a crafted install-state cannot redirect execution to an
+        # arbitrary install.sh.
+        compose_root = project / "infra" / "compose"
+        compose_file = _confined(Path(state["COMPOSE_FILE"]), compose_root, label="compose file")
+        https_compose_file = _confined(Path(state["HTTPS_COMPOSE_FILE"]), compose_root, label="HTTPS compose file")
         release_compose_value = state.get("RELEASE_COMPOSE_FILE", "")
-        release_compose = Path(release_compose_value).resolve() if release_compose_value else None
+        release_compose = _confined(Path(release_compose_value), compose_root, label="release compose file") if release_compose_value else None
         # Image-level rollback needs the exact offline archive the installed
         # release was loaded from. install.sh persists the digest-pinned path;
         # re-verify it before any rollback can depend on it.
@@ -664,7 +696,8 @@ class UpdateAgent:
         images_file: Path | None = None
         images_digest: str | None = None
         if images_file_value:
-            images_file = Path(images_file_value).resolve()
+            # Enterprise: the offline archive must live under the state dir.
+            images_file = _confined(Path(images_file_value), self.state_dir, label="release image archive")
             _regular_file(images_file, maximum=MAX_ARCHIVE_BYTES)
             if not SHA256_RE.fullmatch(images_digest_value):
                 raise UpdateRejected("state_invalid", "The installed release image pin is invalid.")
@@ -673,11 +706,14 @@ class UpdateAgent:
                 raise UpdateRejected("state_invalid", "The installed release image archive does not match its pin.")
         elif images_digest_value:
             raise UpdateRejected("state_invalid", "The installed release image pin is incomplete.")
+        project_name = state["COMPOSE_PROJECT"]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", project_name):
+            raise UpdateRejected("state_invalid", "The installed compose project name is invalid.")
         target = ReleaseTarget(
             version=state["VERSION"],
             project_dir=project,
-            compose_file=Path(state["COMPOSE_FILE"]).resolve(),
-            https_compose_file=Path(state["HTTPS_COMPOSE_FILE"]).resolve(),
+            compose_file=compose_file,
+            https_compose_file=https_compose_file,
             release_compose_file=release_compose,
             images_file=images_file,
             images_digest=images_digest,
@@ -685,10 +721,10 @@ class UpdateAgent:
         context = InstallContext(
             config_dir=self.config_dir,
             state_dir=self.state_dir,
-            project_name=state["COMPOSE_PROJECT"],
+            project_name=project_name,
             capture_interface=capture,
-            bind_address=environment["CUSTOMER_BIND_ADDRESS"],
-            lan_host=environment["CUSTOMER_LAN_HOST"],
+            bind_address=bind_address,
+            lan_host=lan_host,
             health_timeout=health_timeout,
         )
         return target, context

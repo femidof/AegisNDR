@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from hybrid_ndr_auth import DEFAULT_ROLE_PERMISSIONS
 
-STANDALONE_ROLES = frozenset({"organization_owner", "security_admin", "soc_manager", "analyst", "auditor"})
+STANDALONE_ROLES = frozenset({"analyst", "auditor", "read_only"})
 
 
 class StandaloneAuthError(ValueError):
@@ -82,6 +82,14 @@ def issue_access_token(
     """Mint a short-lived RS256 analyst token for the local identity issuer."""
     if role not in STANDALONE_ROLES or role not in DEFAULT_ROLE_PERMISSIONS:
         raise StandaloneAuthError("role is not available for standalone access")
+    if not tenant_id.strip() or not deployment_id.strip():
+        raise StandaloneAuthError("tenant and deployment identity are required")
+    if not actor_id.strip() or len(actor_id) > 64:
+        raise StandaloneAuthError("analyst identifier is invalid")
+    import re as _re
+
+    if not _re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", actor_id):
+        raise StandaloneAuthError("analyst identifier is invalid")
     if not 60 <= ttl_seconds <= 86_400:
         raise StandaloneAuthError("token lifetime is outside the supported range")
     from cryptography.hazmat.primitives import hashes, serialization

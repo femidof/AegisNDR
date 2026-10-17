@@ -128,6 +128,14 @@ class ConnectorSettings:
     def validate(self) -> None:
         if not self.control_plane_url:
             raise ValueError("CONTROL_PLANE_URL is required")
+        from urllib.parse import urlparse as _urlparse
+
+        parsed = _urlparse(self.control_plane_url)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+            raise ValueError("CONTROL_PLANE_URL must be an http(s) URL with a host")
+        is_loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and not (self.allow_insecure_loopback and is_loopback):
+            raise ValueError("CONTROL_PLANE_URL must use https unless explicit loopback development is enabled")
         if not self.software_version or len(self.software_version) > 128:
             raise ValueError("HYBRID_NDR_RELEASE_VERSION is invalid")
         values = (

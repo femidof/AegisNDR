@@ -16,6 +16,7 @@ volumes:
 
 services:
   provider-mock:
+    restart: unless-stopped
     profiles: [vendor]
     build:
       context: ../..
@@ -37,7 +38,9 @@ services:
       - provider-pki:/pki
       - ../../scripts/mock-https-provider.py:/opt/hybrid-ndr/mock-https-provider.py:ro
     networks: [outbound-control]
-    user: "0:0"
+    # Enterprise: test-only overlay must never run as root in prod; the
+    # python runtime image defaults to 65532:65532 (see python.Dockerfile).
+    user: "65532:65532"
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
@@ -54,6 +57,7 @@ services:
       start_period: 10s
 
   model-gateway:
+    restart: unless-stopped
     environment:
       MODEL_PROVIDER_MODE: http
       MODEL_PROVIDER_NAME: live-zero-retention

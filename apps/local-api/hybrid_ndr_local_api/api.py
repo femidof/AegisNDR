@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs
 
@@ -38,6 +40,55 @@ ROLE_PERMISSIONS = DEFAULT_ROLE_PERMISSIONS
 # Reject request bodies above this size before any JSON parsing; the WSGI
 # layer refuses oversized Content-Length without reading the stream.
 MAX_BODY_BYTES = 1_000_000
+
+# Bounded pagination defaults for list endpoints (enterprise DoS hardening).
+DEFAULT_LIST_LIMIT = 100
+MAX_LIST_LIMIT = 500
+
+
+def _bounded_limit(raw: str | None, *, default: int = DEFAULT_LIST_LIMIT) -> int:
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError) as exc:
+        raise APIError(400, "invalid_pagination", "Query limit/offset must be integers.") from exc
+    if value < 1 or value > MAX_LIST_LIMIT:
+        raise APIError(400, "invalid_pagination", f"Query limit must be between 1 and {MAX_LIST_LIMIT}.")
+    return value
+
+
+def _bounded_offset(raw: Any, *, default: int = 0) -> int:
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError) as exc:
+        raise APIError(400, "invalid_pagination", "Query limit/offset must be integers.") from exc
+    if value < 0 or value > 100_000:
+        raise APIError(400, "invalid_pagination", "Query offset is outside the permitted range.")
+    return value
+
+
+def _load_secret(name: str, *, minimum: int = 32) -> bytes:
+    """Load a gateway/redaction secret from file or env; else ephemeral random.
+
+    Production deployments set MODEL_GATEWAY_SIGNING_KEY_FILE /
+    MODEL_GATEWAY_SIGNING_KEY (and LOCAL_REDACTION_TOKEN_KEY_FILE /
+    LOCAL_REDACTION_TOKEN_KEY). Committed demo constants are never used:
+    without configuration we generate an ephemeral per-process key so
+    envelopes cannot be forged across restarts/leaks.
+    """
+    file_var = os.environ.get(name + "_FILE", "").strip()
+    value = b""
+    if file_var:
+        path = Path(file_var)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16_384:
+            raise RuntimeError(f"{name}_FILE is invalid")
+        value = path.read_bytes().strip()
+    else:
+        value = os.environ.get(name, "").encode("utf-8").strip()
+    if not value:
+        return secrets.token_bytes(minimum)
+    if len(value) < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum} bytes")
+    return value
 
 
 class APIError(RuntimeError):
@@ -206,7 +257,7 @@ class LocalAPI:
             items = self.store.list_alerts(
                 auth.tenant_id, deployment_id=auth.deployment_id,
                 status=self._first(query, "status"), severity=self._first(query, "severity"),
-                limit=int(self._first(query, "limit") or 100),
+                limit=_bounded_limit(self._first(query, "limit")),
             )
             return APIResponse(200, {"items": items, "count": len(items)})
         match = re.fullmatch(r"/api/v1/alerts/([^/]+)", path)
@@ -251,9 +302,9 @@ class LocalAPI:
                 entity_id=body.get("entity_id"), source=body.get("source"), query_text=body.get("query"),
                 start_time=body.get("start_time"), end_time=body.get("end_time"), protocol=body.get("protocol"),
                 src_ip=body.get("src_ip"), dst_ip=body.get("dst_ip"), sensor_id=body.get("sensor_id"),
-                event_id=body.get("event_id"), offset=int(body.get("offset", 0)), limit=int(body.get("limit", 100)),
+                event_id=body.get("event_id"), offset=_bounded_offset(body.get("offset", 0)), limit=_bounded_limit(str(body.get("limit", 100))),
             )
-            return APIResponse(200, {"items": items, "count": len(items), "offset": int(body.get("offset", 0)), "limit": int(body.get("limit", 100))})
+            return APIResponse(200, {"items": items, "count": len(items), "offset": _bounded_offset(body.get("offset", 0)), "limit": _bounded_limit(str(body.get("limit", 100)))})
         if method == "POST" and path == "/api/v1/events/ingest":
             auth.require("events:write")
             raw_events = body.get("events")
@@ -360,7 +411,7 @@ class LocalAPI:
             return APIResponse(200, {"items": items, "count": len(items)})
         if method == "GET" and path == "/api/v1/audit":
             auth.require("audit:read")
-            items = self.store.audit.list(auth.tenant_id, auth.deployment_id, limit=int(self._first(query, "limit") or 200))
+            items = self.store.audit.list(auth.tenant_id, auth.deployment_id, limit=_bounded_limit(self._first(query, "limit"), default=200))
             return APIResponse(200, {"items": items, "count": len(items), "chain_valid": self.store.audit.verify(auth.tenant_id, auth.deployment_id)})
         if method == "GET" and path == "/api/v1/model-policy":
             auth.require("transmissions:read")
@@ -435,7 +486,7 @@ class LocalAPI:
             self._audit(auth, "suppression.deleted", "detection_suppression", item["suppression_id"], request_id)
             return APIResponse(200, {"deleted": True, "item": item})
         if method == "GET" and path == "/api/v1/integrations":
-            auth.require("integrations:manage")
+            auth.require("integrations:read")
             items = self.store.list_integrations(auth.tenant_id, auth.deployment_id)
             return APIResponse(200, {
                 "items": items, "count": len(items),
@@ -456,7 +507,7 @@ class LocalAPI:
             return APIResponse(201, item)
         match = re.fullmatch(r"/api/v1/integrations/([^/]+)", path)
         if match and method == "GET":
-            auth.require("integrations:manage")
+            auth.require("integrations:read")
             return APIResponse(200, self.store.get_integration(
                 auth.tenant_id, auth.deployment_id, match.group(1)
             ))
@@ -556,7 +607,7 @@ class LocalAPI:
                 "sha256": item["sha256"], "document": document,
             })
         if method == "GET" and path == "/api/v1/support-bundles":
-            auth.require("deployments:manage")
+            auth.require("support:read")
             items = self.store.list_support_bundles(auth.tenant_id, auth.deployment_id)
             return APIResponse(200, {"items": items, "count": len(items)})
         if method == "POST" and path == "/api/v1/support-bundles":
@@ -596,13 +647,13 @@ class LocalAPI:
             return APIResponse(201, item)
         match = re.fullmatch(r"/api/v1/support-bundles/([^/]+)", path)
         if match and method == "GET":
-            auth.require("deployments:manage")
+            auth.require("support:read")
             return APIResponse(200, self.store.get_support_bundle(
                 auth.tenant_id, auth.deployment_id, match.group(1)
             ))
         match = re.fullmatch(r"/api/v1/support-bundles/([^/]+)/download", path)
         if match and method == "GET":
-            auth.require("deployments:manage")
+            auth.require("support:read")
             item = self.store.get_support_bundle(auth.tenant_id, auth.deployment_id, match.group(1))
             expiry = datetime.fromisoformat(item["expires_at"].replace("Z", "+00:00"))
             if datetime.now(timezone.utc) >= expiry:
@@ -651,15 +702,23 @@ class LocalAPI:
             return self._error(401, "standalone_login_denied", "The standalone login credential is invalid.", request_id, cors)
         actor_id = str(payload.get("analyst", "")).strip()
         role = str(payload.get("role", "")).strip().lower().replace("-", "_")
-        if not actor_id or len(actor_id) > 128:
-            return self._error(400, "invalid_login", "Provide an analyst identifier of at most 128 characters.", request_id, cors)
-        config = self.authenticator.config if hasattr(self.authenticator, "config") else None
-        issuer = getattr(config, "issuer", "") or "https://hybrid-ndr.local/oidc"
-        audience = getattr(config, "audience", "") or "https://hybrid-ndr.local/api"
+        if not actor_id or len(actor_id) > 64 or not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", actor_id):
+            return self._error(400, "invalid_login", "Provide an analyst identifier (1-64 chars: letters, digits, . _ @ -).", request_id, cors)
+        # Enterprise: standalone login may only mint least-privilege analyst roles.
+        allowed_roles = {"analyst", "auditor", "read_only"}
+        if role not in allowed_roles:
+            return self._error(400, "invalid_login", "Role is not available for standalone access.", request_id, cors)
+        auth_config = self.authenticator.config if hasattr(self.authenticator, "config") else None
+        tenant_id = getattr(auth_config, "expected_tenant_id", "") or os.environ.get("TENANT_ID", "")
+        deployment_id = getattr(auth_config, "expected_deployment_id", "") or os.environ.get("DEPLOYMENT_ID", "")
+        if not tenant_id.strip() or not deployment_id.strip():
+            return self._error(500, "standalone_identity_unavailable", "Standalone tenant identity is not configured.", request_id, cors)
+        issuer = getattr(auth_config, "issuer", "") or "https://hybrid-ndr.local/oidc"
+        audience = getattr(auth_config, "audience", "") or "https://hybrid-ndr.local/api"
         try:
             issued = issue_access_token(
-                tenant_id=getattr(config, "expected_tenant_id", "") or os.environ.get("TENANT_ID", ""),
-                deployment_id=getattr(config, "expected_deployment_id", "") or os.environ.get("DEPLOYMENT_ID", ""),
+                tenant_id=tenant_id,
+                deployment_id=deployment_id,
                 actor_id=actor_id,
                 role=role,
                 issuer=issuer,
@@ -713,7 +772,9 @@ class LocalAPI:
         common = (
             ("Vary", "Origin"),
             ("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Deployment-ID, X-Actor-ID, X-Role, X-Permissions, Idempotency-Key"),
+            # Enterprise: demo-only X-Actor-ID/X-Role/X-Permissions are never
+            # exposed cross-origin; JWT mode uses Authorization + tenant binding.
+            ("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Deployment-ID, Idempotency-Key"),
             ("Access-Control-Max-Age", "600"),
         )
         if origin and origin in self.allowed_origins:
@@ -756,9 +817,12 @@ def create_application(store: LocalStore, *, authenticator: Any | None = None, p
                 config, StaticJWKSource(jwks["keys"]), role_permissions=ROLE_PERMISSIONS
             )
     gateway = ModelGateway(
-        DeterministicAssessmentProvider(), signing_key=b"local-demo-envelope-signing-key-0123456789"
+        DeterministicAssessmentProvider(),
+        signing_key=_load_secret("MODEL_GATEWAY_SIGNING_KEY"),
     )
-    runtime = InvestigationRuntime(store, gateway, token_key=b"local-demo-redaction-token-key")
+    runtime = InvestigationRuntime(
+        store, gateway, token_key=_load_secret("LOCAL_REDACTION_TOKEN_KEY")
+    )
     api = LocalAPI(store, runtime, authenticator=authenticator, persistence=persistence)
 
     def application(environ: Mapping[str, Any], start_response: Any):

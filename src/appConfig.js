@@ -3,7 +3,8 @@ const viteEnvironment = import.meta.env ?? {};
 const DEFAULT_SCOPES = [
   "openid",
   "profile",
-  "offline_access",
+  // Enterprise: no offline_access by default (enrollment bootstrap rejects it;
+  // refresh stays bound to the Logto session).
   "urn:logto:scope:organizations",
   "urn:logto:scope:organization_roles",
   "alerts:read",

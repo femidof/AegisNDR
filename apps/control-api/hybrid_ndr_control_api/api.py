@@ -72,6 +72,8 @@ class ControlAPI:
         allowed_origins: set[str] | None = None,
         allow_insecure_fingerprint_header: bool = False,
     ) -> None:
+        if allow_insecure_fingerprint_header and os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+            raise ValueError("insecure fingerprint header is forbidden when HYBRID_NDR_ENV=production")
         self.store, self.gateway = store, gateway
         self.portal_authenticator = portal_authenticator
         self.allow_insecure_fingerprint_header = allow_insecure_fingerprint_header
@@ -99,7 +101,10 @@ class ControlAPI:
                 self.store.connection.execute("SELECT 1")
                 return Response(200, {"status": "healthy", "service": "control-api", "evidence_retained": False}, cors)
             # Bound authenticated abuse without distinguishing shared network IPs.
-            rate_key = headers.get("x-tenant-id", "") or "anonymous"
+            # Enterprise: pre-auth limiter must not trust a caller-supplied
+            # tenant header (key rotation evasion); per-tenant limits apply
+            # after mTLS authentication inside _authenticated().
+            rate_key = "anonymous"
             if not self.rate_limiter.allow(rate_key):
                 return Response(
                     429, {"error": {"code": "rate_limit_exceeded", "message": "Too many requests; retry after the limit window resets."}, "request_id": request_id},
@@ -161,16 +166,16 @@ class ControlAPI:
                 return Response(200, result, cors)
             if method == "POST" and path == "/v1/certificates/rotate":
                 reject_customer_content(payload)
-                # A rotation response may be lost after the server activates the
-                # new certificate. Permit replay of that exact public-certificate
-                # response by its high-entropy operation key before requiring the
-                # now-retired certificate; a different key still requires mTLS.
-                key = self._idempotency(headers)
+                # Enterprise: authenticate before consulting the idempotency
+                # cache. The cache key is namespaced by the authenticated
+                # deployment so unauthenticated callers cannot probe/replay
+                # another deployment's rotation response.
                 requested_deployment = headers.get("x-deployment-id", "")
-                cached = self.store.get_idempotent(f"certificate.rotate:{requested_deployment}", key)
+                _, deployment = self._authenticated(headers, requested_deployment, idempotent=False)
+                key = self._idempotency(headers)
+                cached = self.store.get_idempotent(f"certificate.rotate:{deployment['deployment_id']}", key)
                 if cached:
                     return Response(200, cached, cors)
-                _, deployment = self._authenticated(headers, requested_deployment, idempotent=False)
                 result = self.store.rotate_certificate(deployment["tenant_id"], deployment["deployment_id"], str(payload.get("csr", "")))
                 self.store.save_idempotent(f"certificate.rotate:{deployment['deployment_id']}", key, result)
                 return Response(200, result, cors)
@@ -394,8 +399,14 @@ class ControlAPI:
             raise APIError(401, "deployment_authentication_required", "X-Tenant-ID and X-Deployment-ID are required.")
         fingerprint = headers.get("x-verified-client-certificate-fingerprint", "")
         if not fingerprint and self.allow_insecure_fingerprint_header:
+            if os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+                raise APIError(401, "deployment_authentication_required", "Verified deployment certificate is required.")
             fingerprint = headers.get("x-client-certificate-fingerprint", "")
         deployment = self.store.authenticate(tenant_id, deployment_id, fingerprint)
+        # Per-deployment rate limit on the verified identity (not the header).
+        verified_key = f"{deployment['tenant_id']}:{deployment['deployment_id']}"
+        if not self.rate_limiter.allow(verified_key):
+            raise APIError(429, "rate_limit_exceeded", "Too many requests; retry after the limit window resets.")
         return (self._idempotency(headers) if idempotent else "", deployment)
 
     @staticmethod

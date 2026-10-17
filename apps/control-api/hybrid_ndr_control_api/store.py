@@ -876,6 +876,7 @@ class ControlStore:
         self.connection.commit()
 
     def reset_demo(self) -> str:
+        """Dev/test-only reset. Always mints a fresh random single-use token."""
         self.connection.execute("DELETE FROM enrollment_tokens WHERE tenant_id = 'demo-tenant'")
         self.connection.execute("DELETE FROM deployments WHERE tenant_id = 'demo-tenant'")
         self.connection.execute("DELETE FROM organizations WHERE tenant_id = 'demo-tenant'")
@@ -894,7 +895,6 @@ class ControlStore:
         )
         return self.create_enrollment_token(
             "demo-tenant",
-            token="demo-enrollment-token",
             deployment_name="Demo edge site",
             model_policy={
                 "policy_id": "policy-v1",

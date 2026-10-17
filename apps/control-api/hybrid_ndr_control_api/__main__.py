@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -76,12 +77,17 @@ def main() -> None:
         },
     )
     if args.reset_demo:
+        if os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+            raise SystemExit("--reset-demo is forbidden when HYBRID_NDR_ENV=production")
+        print("WARNING: --reset-demo mints a fresh random single-use token for development only.")
         print(f"Demo enrollment token: {store.reset_demo()}")
     gateway = None
     if args.demo_provider:
+        if os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+            raise SystemExit("--demo-provider is forbidden when HYBRID_NDR_ENV=production")
         gateway = ModelGateway(
             DeterministicAssessmentProvider(),
-            signing_key=b"explicit-control-plane-demo-key-0123456789",
+            signing_key=secrets.token_bytes(32),
             usage_sink=store.save_gateway_usage,
         )
     portal_authenticator = None
@@ -90,6 +96,8 @@ def main() -> None:
     else:
         print("WARNING: cloud portal routes will fail closed because portal authentication is not configured.")
     tls_enabled = bool(args.tls_cert and args.tls_key and args.client_ca)
+    if args.allow_insecure_fingerprint_header and os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+        raise SystemExit("insecure fingerprint header is forbidden when HYBRID_NDR_ENV=production")
     if not tls_enabled and not args.allow_insecure_fingerprint_header:
         print("WARNING: deployment routes will fail closed because verified mTLS is not configured.")
     scheme = "https" if tls_enabled else "http"

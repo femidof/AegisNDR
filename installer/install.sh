@@ -288,6 +288,14 @@ if [[ ! -e "$env_file" ]]; then
   mv -- "$temporary_env" "$env_file"
 fi
 hybrid_ndr_secure_file "$env_file"
+# Enterprise fail-closed: never allow development placeholder secrets or
+# insecure dev flags into a customer deployment.
+if grep -Eq 'replace-with-generated-secret|replace-after-logto-bootstrap|development-.*-change-me|development-not-used-in-demo-mode' "$env_file"; then
+  hybrid_ndr_die "customer.env contains unreplaced development placeholder secrets; regenerate with install.sh"
+fi
+if grep -Eq '^(AUTH_JWKS_ALLOW_INSECURE_HTTP|CONTROL_PORTAL_AUTH_JWKS_ALLOW_INSECURE_HTTP|CONTROL_API_ALLOW_INSECURE_FINGERPRINT_HEADER|MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER)=true' "$env_file"; then
+  hybrid_ndr_die "customer.env enables an insecure development override; set it to false for production"
+fi
 hybrid_ndr_upsert_env "$env_file" CAPTURE_INTERFACE "$capture_interface"
 hybrid_ndr_upsert_env "$env_file" SENSOR_CAPTURE_MODE live
 hybrid_ndr_upsert_env "$env_file" SENSOR_NETWORK_MODE host
@@ -302,6 +310,7 @@ hybrid_ndr_upsert_env "$env_file" LOGTO_POST_LOGOUT_URI "$dashboard_public_origi
 hybrid_ndr_upsert_env "$env_file" HYBRID_NDR_CONFIG_DIR "$config_dir"
 hybrid_ndr_upsert_env "$env_file" HYBRID_NDR_STATE_DIR "$state_dir"
 hybrid_ndr_upsert_env "$env_file" HYBRID_NDR_INTERNAL_TLS_DIR "$internal_tls_dir"
+hybrid_ndr_upsert_env "$env_file" HYBRID_NDR_INTERNAL_TLS_GID "$(stat -c %g "$internal_tls_dir/postgres-key.pem")"
 hybrid_ndr_upsert_env "$env_file" CONNECTOR_ENABLED true
 
 # Prometheus scrape token for the operations-agent metrics endpoint. Persisted

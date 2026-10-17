@@ -21,37 +21,46 @@
 
 services:
   postgres:
+    group_add: ["${HYBRID_NDR_INTERNAL_TLS_GID:-1000}"]
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -e
-        install -d -o postgres -g postgres -m 0700 /run/internal-tls
+        install -d -m 0700 /run/internal-tls
         for name in postgres-cert.pem postgres-key.pem ca-cert.pem; do
-          install -o postgres -g postgres -m 0600 "/mnt/internal-tls/$$name" "/run/internal-tls/$$name"
+          install -m 0600 "/mnt/internal-tls/$$name" "/run/internal-tls/$$name"
         done
-        install -o postgres -g postgres -m 0600 /mnt/pg-hba.conf /run/internal-tls/pg_hba.conf
-        exec gosu postgres postgres \
+        install -m 0600 /mnt/pg-hba.conf /run/internal-tls/pg_hba.conf
+        exec postgres \
           -c ssl=on \
           -c ssl_cert_file=/run/internal-tls/postgres-cert.pem \
           -c ssl_key_file=/run/internal-tls/postgres-key.pem \
           -c hba_file=/run/internal-tls/pg_hba.conf
+    tmpfs: ["/run/internal-tls:uid=70,gid=70,mode=0700"]
     volumes:
-      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}:/mnt/internal-tls:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/mnt/internal-tls/ca-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/postgres-cert.pem:/mnt/internal-tls/postgres-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/postgres-key.pem:/mnt/internal-tls/postgres-key.pem:ro
       - ../internal-tls/pg_hba.conf:/mnt/pg-hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
 
   clickhouse:
+    group_add: ["${HYBRID_NDR_INTERNAL_TLS_GID:-1000}"]
     entrypoint:
       - /bin/sh
       - /opt/hybrid-ndr/clickhouse-entrypoint.sh
+    tmpfs: ["/var/lib/clickhouse/internal-tls:uid=101,gid=101,mode=0700"]
     volumes:
-      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}:/mnt/internal-tls:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/mnt/internal-tls/ca-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/clickhouse-cert.pem:/mnt/internal-tls/clickhouse-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/clickhouse-key.pem:/mnt/internal-tls/clickhouse-key.pem:ro
       - ../internal-tls/clickhouse-tls.xml:/etc/clickhouse-server/config.d/hybrid-ndr-tls.xml:ro
       - ../internal-tls/clickhouse-entrypoint.sh:/opt/hybrid-ndr/clickhouse-entrypoint.sh:ro
 
   minio:
+    group_add: ["${HYBRID_NDR_INTERNAL_TLS_GID:-1000}"]
     command: server /data --console-address :9001
     volumes:
       - minio-data:/data
@@ -112,4 +121,9 @@ services:
       DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER}
       DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD}
     volumes:
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  prometheus:
+    volumes:
+      - ../internal-tls/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro

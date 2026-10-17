@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ class GatewayAPI:
         *,
         allow_insecure_fingerprint_header: bool = False,
     ) -> None:
+        if allow_insecure_fingerprint_header and os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+            raise ValueError("insecure fingerprint header is forbidden when HYBRID_NDR_ENV=production")
         self.deployment_store = deployment_store
         self.gateway = gateway
         self.allow_insecure_fingerprint_header = allow_insecure_fingerprint_header
@@ -71,6 +74,9 @@ class GatewayAPI:
                 return self._error(401, "deployment_authentication_required", request_id)
             fingerprint = normalized.get("x-verified-client-certificate-fingerprint", "")
             if not fingerprint and self.allow_insecure_fingerprint_header:
+                if os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+                    status = 401
+                    return self._error(401, "deployment_authentication_required", request_id)
                 fingerprint = normalized.get("x-client-certificate-fingerprint", "")
             deployment = self.deployment_store.authenticate(tenant_id, deployment_id, fingerprint)
             result = self.gateway.investigate(

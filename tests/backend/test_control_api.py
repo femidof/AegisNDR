@@ -156,11 +156,18 @@ class ControlAPITests(unittest.TestCase):
 
         replay_after_lost_response = self.api.handle(
             "POST", "/v1/certificates/rotate",
-            headers={**self.headers(enrollment), "Idempotency-Key": "certificate-rotate-0001"},
+            headers={**self.headers(rotated_enrollment), "Idempotency-Key": "certificate-rotate-0001"},
             body={"csr": new_csr},
         )
         self.assertEqual(replay_after_lost_response.status, 200)
         self.assertEqual(replay_after_lost_response.body, rotated.body)
+        # The retired certificate can no longer replay, even with the same key.
+        retired_replay = self.api.handle(
+            "POST", "/v1/certificates/rotate",
+            headers={**self.headers(enrollment), "Idempotency-Key": "certificate-rotate-0001"},
+            body={"csr": new_csr},
+        )
+        self.assertEqual(retired_replay.status, 401)
 
         old_certificate = self.api.handle(
             "GET", f"/v1/deployments/{enrollment['deployment_id']}/entitlements",

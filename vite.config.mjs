@@ -9,7 +9,9 @@ export default defineConfig({
     include: ["react", "react-dom/client"],
   },
   server: {
-    host: "0.0.0.0",
+    // Enterprise: loopback-only by default; override with VITE_HOST only for
+    // container previews (allowedHosts stays pinned).
+    host: process.env.VITE_HOST || "127.0.0.1",
     allowedHosts: ["terminal.local"],
     warmup: {
       clientFiles: ["./src/main.jsx"],

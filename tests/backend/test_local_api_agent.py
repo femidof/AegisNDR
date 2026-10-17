@@ -4,16 +4,22 @@ import unittest
 
 import support
 from hybrid_ndr_agent import InvestigationRuntime
+from hybrid_ndr_auth import HeaderAuthenticator
 from hybrid_ndr_gateway import ModelGateway, OfflineProvider
 from hybrid_ndr_local_api import LocalAPI, create_application
 from hybrid_ndr_storage import LocalStore
+
+
+def demo_authenticator():
+    # Explicit demo-only auth for unit tests; production defaults to JWT.
+    return HeaderAuthenticator()
 
 
 class LocalAPITests(unittest.TestCase):
     def setUp(self):
         self.store = LocalStore(":memory:")
         self.store.reset_demo()
-        self.api = create_application(self.store).api
+        self.api = create_application(self.store, authenticator=demo_authenticator()).api
         self.headers = support.analyst_headers()
 
     def tearDown(self):
@@ -72,7 +78,7 @@ class LocalAPITests(unittest.TestCase):
             ModelGateway(OfflineProvider(), signing_key=b"offline-gateway-signing-key-0123456789"),
             token_key=b"offline-redaction-token-key",
         )
-        api = LocalAPI(self.store, runtime)
+        api = LocalAPI(self.store, runtime, authenticator=demo_authenticator())
         result = api.handle("POST", "/api/v1/alerts/demo-alert-suricata/investigate", headers=self.headers)
         self.assertEqual(result.status, 201)
         self.assertEqual(result.body["status"], "unavailable")

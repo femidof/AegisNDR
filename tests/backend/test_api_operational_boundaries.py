@@ -6,6 +6,7 @@ import unittest
 from contextlib import redirect_stderr
 
 import support  # noqa: F401
+from hybrid_ndr_auth import HeaderAuthenticator
 from hybrid_ndr_local_api import LocalAPI, create_application
 from hybrid_ndr_observability.ratelimit import FixedWindowLimiter
 from hybrid_ndr_storage import LocalStore
@@ -15,7 +16,8 @@ class APIOperationalBoundariesTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = LocalStore(":memory:")
         self.store.reset_demo()
-        self.api = create_application(self.store).api
+        # Explicit demo-only auth for unit tests; production defaults to JWT.
+        self.api = create_application(self.store, authenticator=HeaderAuthenticator()).api
         self.headers = support.analyst_headers()
 
     def tearDown(self) -> None:
@@ -62,7 +64,9 @@ class APIOperationalBoundariesTests(unittest.TestCase):
         self.assertEqual(result.body["error"]["code"], "body_too_large")
 
     def test_wsgi_layer_rejects_oversized_content_length_without_reading(self) -> None:
-        application = create_application(self.store)
+        from hybrid_ndr_auth import HeaderAuthenticator
+
+        application = create_application(self.store, authenticator=HeaderAuthenticator())
         captured: list = []
         environ = {
             "REQUEST_METHOD": "POST",

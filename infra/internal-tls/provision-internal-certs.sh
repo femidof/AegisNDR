@@ -10,9 +10,11 @@ set -euo pipefail
 
 output_dir=${1:?usage: provision-internal-certs.sh OUTPUT_DIR}
 mkdir -p "$output_dir"
+chmod 0700 "$output_dir"
 
 if [[ -s "$output_dir/ca-cert.pem" && -s "$output_dir/postgres-cert.pem" \
       && -s "$output_dir/clickhouse-cert.pem" && -s "$output_dir/minio-cert.pem" ]]; then
+  chmod 0640 "$output_dir/postgres-key.pem" "$output_dir/clickhouse-key.pem" "$output_dir/minio-key.pem"
   echo "internal TLS material already present in $output_dir (reusing stable CA)"
   exit 0
 fi
@@ -61,6 +63,7 @@ done
 
 install -m 0644 "$work/ca-cert.pem" "$output_dir/ca-cert.pem"
 for service in postgres clickhouse minio; do
+  # The private directory protects keys on the host; service groups read bound files.
   install -m 0640 "$work/$service-key.pem" "$output_dir/$service-key.pem"
   install -m 0644 "$work/$service-cert.pem" "$output_dir/$service-cert.pem"
 done

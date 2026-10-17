@@ -1,6 +1,6 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, realpathSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 
 const root = process.env.CLOUD_PORTAL_ROOT || "/app/portal";
 const port = Number(process.env.PORT || 4180);
@@ -16,8 +16,10 @@ const contentTypes = {
 };
 
 function scopes() {
+  // Enterprise: never request offline_access for the cloud console; the
+  // enrollment bootstrap rejects it and refresh is bound to the Logto session.
   const fallback = [
-    "openid", "profile", "offline_access",
+    "openid", "profile",
     "urn:logto:scope:organizations", "urn:logto:scope:organization_roles",
     "organizations:read", "organizations:manage", "users:read", "users:manage",
     "deployments:read", "deployments:manage", "entitlements:read", "entitlements:manage",
@@ -45,14 +47,19 @@ function runtimeConfig() {
 function securityHeaders(contentType = "") {
   let identityOrigin = "";
   try { identityOrigin = new URL(logtoPublicEndpoint).origin; } catch { /* invalid config is shown in the app */ }
-  return {
+  const headers = {
     ...(contentType ? { "Content-Type": contentType } : {}),
-    "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${identityOrigin}; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+    "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${identityOrigin}; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
     "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
   };
+  if (String(process.env.CLOUD_PORTAL_PUBLIC_ORIGIN || "").startsWith("https://")) {
+    headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+  }
+  return headers;
 }
 
 function proxyPortal(incoming, outgoing) {
@@ -118,8 +125,18 @@ function serveStatic(incoming, outgoing) {
   let pathname = "/";
   try { pathname = decodeURIComponent(new URL(incoming.url, "http://portal.local").pathname); } catch { /* serve application shell */ }
   const relative = normalize(pathname).replace(/^([/\\]*\.\.([/\\]|$))+/, "").replace(/^[/\\]+/, "");
-  let file = join(root, relative);
-  if (!file.startsWith(`${root}/`) || !existsSync(file) || statSync(file).isDirectory()) file = join(root, "index.html");
+  const rootResolved = resolve(root);
+  let file = join(rootResolved, relative);
+  // Enterprise: confine to the portal root even through symlinks. statSync
+  // follows links, so resolve lstat + realpath and re-check containment.
+  try {
+    if (lstatSync(file).isSymbolicLink()) file = realpathSync(file);
+  } catch { file = join(rootResolved, "index.html"); }
+  file = resolve(file);
+  if (!file.startsWith(`${rootResolved}${sep}`) && file !== join(rootResolved, "index.html")) file = join(rootResolved, "index.html");
+  let isDirectory = false;
+  try { isDirectory = lstatSync(file).isDirectory(); } catch { isDirectory = true; }
+  if (!existsSync(file) || isDirectory) file = join(rootResolved, "index.html");
   outgoing.writeHead(200, {
     ...securityHeaders(contentTypes[extname(file)] || "application/octet-stream"),
     "Cache-Control": file.endsWith("index.html") ? "no-store" : "public, max-age=3600",

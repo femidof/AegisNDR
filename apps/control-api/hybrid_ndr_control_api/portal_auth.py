@@ -99,6 +99,11 @@ class PortalAuthConfig:
         mode = env.get("CONTROL_PORTAL_AUTH_MODE", "jwt").strip().lower()
         if mode not in {"jwt", "demo_headers"}:
             raise ValueError("CONTROL_PORTAL_AUTH_MODE must be 'jwt' or 'demo_headers'")
+        if mode == "demo_headers":
+            if env.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+                raise ValueError("CONTROL_PORTAL_AUTH_MODE=demo_headers is forbidden when HYBRID_NDR_ENV=production")
+            if env.get("HYBRID_NDR_ALLOW_DEMO_AUTH", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                raise ValueError("CONTROL_PORTAL_AUTH_MODE=demo_headers requires HYBRID_NDR_ALLOW_DEMO_AUTH=true")
         insecure_jwks = env.get("CONTROL_PORTAL_AUTH_JWKS_ALLOW_INSECURE_HTTP", "").strip()
         config = cls(
             mode=mode,

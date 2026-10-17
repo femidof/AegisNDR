@@ -17,6 +17,8 @@ server {
     ssl_certificate /etc/nginx/tls/server-cert.pem;
     ssl_certificate_key /etc/nginx/tls/server-key.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_session_cache shared:TLS:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
@@ -25,7 +27,7 @@ server {
 
     client_max_body_size 16m;
 
-    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self' ${LOGTO_PUBLIC_ENDPOINT}; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" always;
     add_header Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()" always;
     add_header Referrer-Policy "no-referrer" always;

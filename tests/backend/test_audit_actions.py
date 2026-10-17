@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 import support
+from hybrid_ndr_auth import HeaderAuthenticator
 from hybrid_ndr_local_api import create_application
 from hybrid_ndr_storage import LocalStore
 
@@ -13,7 +14,8 @@ class AuditActionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = LocalStore(":memory:")
         self.store.reset_demo()
-        self.api = create_application(self.store).api
+        # Explicit demo-only auth for unit tests; production defaults to JWT.
+        self.api = create_application(self.store, authenticator=HeaderAuthenticator()).api
         self.analyst = support.analyst_headers()
         self.admin = {**self.analyst, "X-Role": "security-admin", "X-Actor-ID": "admin-01"}
         self.manager = {**self.analyst, "X-Role": "soc-manager", "X-Actor-ID": "manager-01"}

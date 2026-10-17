@@ -18,19 +18,19 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "alerts:read", "alerts:update", "events:search", "investigations:create",
         "investigations:read", "cases:create", "cases:update", "evidence:read",
         "evidence:export", "transmissions:read", "rules:read", "rules:manage",
-        "integrations:manage", "deployments:manage", "users:manage", "audit:read",
-        "response:approve", "model-policy:manage",
+        "integrations:read", "integrations:manage", "deployments:manage", "users:manage", "audit:read",
+        "response:approve", "model-policy:manage", "support:read",
     }),
     "security_admin": frozenset({
         "alerts:read", "alerts:update", "events:search", "investigations:read",
         "evidence:read", "evidence:export", "transmissions:read", "rules:read",
-        "rules:manage", "integrations:manage", "deployments:manage", "audit:read",
-        "model-policy:manage",
+        "rules:manage", "integrations:read", "integrations:manage", "deployments:manage", "audit:read",
+        "model-policy:manage", "support:read",
     }),
     "soc_manager": frozenset({
         "alerts:read", "alerts:update", "events:search", "investigations:create",
         "investigations:read", "cases:create", "cases:update", "evidence:read",
-        "evidence:export", "transmissions:read", "response:approve",
+        "evidence:export", "transmissions:read", "response:approve", "support:read",
     }),
     "analyst": frozenset({
         "alerts:read", "alerts:update", "events:search", "investigations:create",
@@ -39,7 +39,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     }),
     "auditor": frozenset({
         "alerts:read", "investigations:read", "evidence:read", "transmissions:read",
-        "audit:read", "rules:read",
+        "audit:read", "rules:read", "integrations:read", "support:read",
     }),
     "read_only": frozenset({"alerts:read", "events:search", "investigations:read"}),
     "deployment_agent": frozenset({"events:write", "sensors:write"}),
@@ -93,7 +93,7 @@ def _boolean(value: str | None, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class AuthConfig:
-    mode: str = "demo_headers"
+    mode: str = "jwt"
     issuer: str = ""
     audience: str = ""
     jwks_url: str = ""
@@ -114,9 +114,11 @@ class AuthConfig:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AuthConfig":
         env = environ if environ is not None else os.environ
-        mode = env.get("AUTH_MODE", "demo_headers").strip().lower()
+        mode = env.get("AUTH_MODE", "jwt").strip().lower()
         if mode not in {"demo_headers", "jwt"}:
             raise ValueError("AUTH_MODE must be 'demo_headers' or 'jwt'")
+        if mode == "demo_headers" and env.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+            raise ValueError("AUTH_MODE=demo_headers is forbidden when HYBRID_NDR_ENV=production")
         insecure_jwks = env.get("AUTH_JWKS_ALLOW_INSECURE_HTTP", "").strip()
         config = cls(
             mode=mode,
@@ -164,10 +166,16 @@ class AuthConfig:
 
 
 class HeaderAuthenticator:
-    """Explicit demo-only authentication; never selected by the production Compose profile."""
+    """Explicit demo/test-only authentication; never selected unless AUTH_MODE=demo_headers."""
 
     def __init__(self, role_permissions: Mapping[str, frozenset[str]] | None = None) -> None:
         self.role_permissions = dict(role_permissions or DEFAULT_ROLE_PERMISSIONS)
+        try:
+            from hybrid_ndr_observability import warning as log_warning
+
+            log_warning("auth.demo_headers_selected", reason="explicit_development_override")
+        except Exception:
+            pass
 
     def authenticate(self, headers: Mapping[str, str]) -> Principal:
         tenant_id = headers.get("x-tenant-id", "").strip()

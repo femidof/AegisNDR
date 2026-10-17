@@ -33,11 +33,19 @@ def atomic_private(path: Path, value: bytes) -> None:
 
 def write_state(config: Path, version: str = "1.0.0", project: Path | None = None, images_file: Path | None = None, images_digest: str = "") -> None:
     project = project or config / "project"
+    # Enterprise layout: compose files must live under infra/compose.
+    compose_root = project / "infra" / "compose"
+    compose_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name in ("docker-compose.yml", "docker-compose.https.yml"):
+        candidate = compose_root / name
+        if not candidate.exists():
+            candidate.write_text("services: {}\n", encoding="utf-8")
+            os.chmod(candidate, 0o600)
     install_state = {
         "VERSION": version,
         "PROJECT_DIR": str(project),
-        "COMPOSE_FILE": str(project / "compose.yml"),
-        "HTTPS_COMPOSE_FILE": str(project / "compose.https.yml"),
+        "COMPOSE_FILE": str(compose_root / "docker-compose.yml"),
+        "HTTPS_COMPOSE_FILE": str(compose_root / "docker-compose.https.yml"),
         "COMPOSE_PROJECT": "hybrid-ndr-customer",
     }
     if images_file is not None:
@@ -279,7 +287,8 @@ class UpdateAgentTests(unittest.TestCase):
         # (install.sh persists IMAGES_FILE/IMAGES_SHA256 in install-state). A
         # failed candidate must roll back to exactly those images, not to a
         # registry pull that an offline appliance cannot perform.
-        images = self.root / "installed-images.tar"
+        # Enterprise: the archive must live under the state dir.
+        images = self.state / "installed-images.tar"
         images.write_bytes(b"pinned-offline-images")
         os.chmod(images, 0o600)
         pinned_digest = hashlib.sha256(images.read_bytes()).hexdigest()
@@ -295,7 +304,7 @@ class UpdateAgentTests(unittest.TestCase):
         self.assertEqual(current_release.images_digest, pinned_digest)
 
     def test_rollback_rejects_a_tampered_installed_image_pin(self) -> None:
-        images = self.root / "installed-images.tar"
+        images = self.state / "installed-images.tar"
         images.write_bytes(b"pinned-offline-images")
         os.chmod(images, 0o600)
         write_state(

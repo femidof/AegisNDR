@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -43,7 +44,8 @@ def _signing_key(demo: bool) -> bytes:
             raise SystemExit("MODEL_GATEWAY_SIGNING_KEY_FILE is invalid")
         value = path.read_bytes().strip()
     if not value and demo:
-        value = b"explicit-standalone-demo-signing-key"
+        # Enterprise: demo fallback is an ephemeral random key (never committed).
+        value = secrets.token_bytes(32)
     if len(value) < 32:
         raise SystemExit("a model gateway signing key of at least 32 bytes is required")
     return value
@@ -89,6 +91,8 @@ def main() -> None:
         usage_sink=store.save_gateway_usage,
     )
     allow_insecure = _enabled("MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER")
+    if allow_insecure and os.environ.get("HYBRID_NDR_ENV", "").strip().lower() == "production":
+        raise SystemExit("MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER is forbidden when HYBRID_NDR_ENV=production")
     tls_enabled = bool(args.tls_cert and args.tls_key and args.client_ca)
     if not tls_enabled and not allow_insecure:
         raise SystemExit("model gateway requires mTLS files unless explicit insecure loopback mode is enabled")

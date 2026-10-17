@@ -9,5 +9,6 @@ RUN install -d -o 65532 -g 65532 -m 0700 /var/lib/hybrid-ndr \
  && install -d -o 65532 -g 65532 -m 0700 /var/lib/hybrid-ndr/connector \
  && install -d -o 65532 -g 65532 -m 0700 /var/lib/hybrid-ndr/identity \
  && install -d -o 65532 -g 65532 -m 0700 /var/lib/hybrid-ndr/updates
+RUN install -d -o 65532 -g 65532 -m 0755 /var/lib/hybrid-ndr/trust
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER 65532:65532

@@ -54,9 +54,14 @@ class SecurityInvariantTests(unittest.TestCase):
 
     def test_installer_generated_environment_never_enables_insecure_fingerprint(self) -> None:
         installer = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
-        # The installer writes customer.env from its own templates; search for
-        # any upsert that could enable the insecure header.
-        self.assertNotIn("MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER", installer)
+        # The installer writes customer.env from its own templates; forbid any
+        # upsert/render that could enable the insecure header. A fail-closed
+        # grep guard that rejects `=true` is explicitly allowed.
+        for line in installer.splitlines():
+            if "MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER" in line and "grep -Eq" in line:
+                continue
+            self.assertNotIn("MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER", line)
+        self.assertIn("MODEL_GATEWAY_ALLOW_INSECURE_FINGERPRINT_HEADER)=true", installer)
 
 
 if __name__ == "__main__":

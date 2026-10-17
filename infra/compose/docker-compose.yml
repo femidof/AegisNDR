@@ -20,9 +20,12 @@ volumes:
   local-api-data: {}
   control-api-data: {}
   connector-state: {}
+  vendor-trust: {}
 
 services:
   logto-postgres:
+    user: "70:70"
+    restart: unless-stopped
     profiles: [vendor]
     image: postgres:17.5-alpine3.22
     environment:
@@ -32,6 +35,8 @@ services:
     volumes:
       - logto-postgres-data:/var/lib/postgresql/data
     networks: [identity]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -40,6 +45,7 @@ services:
       start_period: 10s
 
   logto:
+    restart: unless-stopped
     profiles: [vendor]
     image: ghcr.io/logto-io/logto:1.39.0
     entrypoint:
@@ -59,6 +65,10 @@ services:
     depends_on:
       logto-postgres:
         condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp, /etc/logto/packages/cli/alteration-scripts]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test:
         - CMD
@@ -71,6 +81,8 @@ services:
       start_period: 30s
 
   postgres:
+    user: "70:70"
+    restart: unless-stopped
     profiles: [customer]
     image: postgres:16.9-alpine3.21
     environment:
@@ -87,6 +99,10 @@ services:
       - ../postgres/002-observability-roles.sh:/docker-entrypoint-initdb.d/002-observability-roles.sh:ro
       - ../postgres/003-operational-retention.sql:/docker-entrypoint-initdb.d/003-operational-retention.sql:ro
     networks: [local-data]
+    # Run the pinned Alpine image as postgres; its existing volumes use UID 70.
+    # No capabilities are needed (PG needs writable /var/run).
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && test \"$$(psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -Atqc 'SELECT count(*) FROM local_state.schema_migrations WHERE version = 1')\" = 1"]
       interval: 10s
@@ -95,6 +111,8 @@ services:
       start_period: 10s
 
   clickhouse:
+    user: "101:101"
+    restart: unless-stopped
     profiles: [customer]
     image: clickhouse/clickhouse-server:24.8.14.39-alpine
     environment:
@@ -106,6 +124,8 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       - ../clickhouse/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     networks: [local-data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test: [CMD-SHELL, "test \"$$(clickhouse-client --user $${CLICKHOUSE_USER} --password $${CLICKHOUSE_PASSWORD} --query 'EXISTS TABLE hybrid_ndr.network_events')\" = 1"]
       interval: 10s
@@ -113,6 +133,7 @@ services:
       retries: 10
 
   minio:
+    restart: unless-stopped
     profiles: [customer]
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
@@ -126,6 +147,8 @@ services:
     volumes:
       - minio-data:/data
     networks: [local-data]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/ready"]
       interval: 10s
@@ -202,7 +225,9 @@ services:
     tmpfs: [/run, /tmp]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [DAC_READ_SEARCH, NET_ADMIN, NET_RAW]
+    # Enterprise: packet capture needs NET_RAW only; NET_ADMIN/DAC_READ_SEARCH
+    # are intentionally not granted so a sensor RCE cannot reconfigure interfaces.
+    cap_add: [NET_RAW]
     depends_on:
       sensor-fixture:
         condition: service_completed_successfully
@@ -234,7 +259,8 @@ services:
     tmpfs: [/run, /tmp]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW]
+    # Enterprise: packet capture needs NET_RAW only (no NET_ADMIN).
+    cap_add: [NET_RAW]
     depends_on:
       sensor-fixture:
         condition: service_completed_successfully
@@ -247,6 +273,7 @@ services:
     restart: unless-stopped
 
   vector:
+    restart: unless-stopped
     profiles: [customer]
     image: timberio/vector:0.46.1-alpine
     environment:
@@ -334,6 +361,7 @@ services:
     restart: unless-stopped
 
   local-api:
+    restart: unless-stopped
     profiles: [customer]
     build:
       context: ../..
@@ -344,6 +372,8 @@ services:
       DEPLOYMENT_ID: ${DEPLOYMENT_ID}
       MODEL_POLICY: ${MODEL_POLICY}
       MODEL_GATEWAY_AVAILABLE: ${MODEL_GATEWAY_AVAILABLE}
+      MODEL_GATEWAY_SIGNING_KEY: ${MODEL_GATEWAY_SIGNING_KEY:-}
+      LOCAL_REDACTION_TOKEN_KEY: ${LOCAL_REDACTION_TOKEN_KEY:-}
       AUTH_MODE: ${AUTH_MODE:-jwt}
       AUTH_ISSUER: ${LOGTO_ENDPOINT:-http://localhost:3011}/oidc
       AUTH_AUDIENCE: ${AUTH_AUDIENCE:-https://hybrid-ndr.local/api}
@@ -396,21 +426,24 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+    # Enterprise: python image runs as 65532:65532 (see python.Dockerfile USER).
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   pki-init:
     profiles: [vendor]
     build:
       context: ../..
       dockerfile: infra/compose/python.Dockerfile
-    command:
-      - python3
-      - -c
-      - "import importlib.util, os; spec = importlib.util.spec_from_file_location('pki', '/app/apps/control-api/hybrid_ndr_control_api/pki.py'); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.CertificateAuthority.load_or_create(os.environ['CONTROL_API_CA_KEY_FILE'], os.environ['CONTROL_API_CA_CERT_FILE'])"
+    command: ["python3", "apps/control-api/provision-runtime-pki.py"]
     environment:
       CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
       CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
     volumes:
       - control-api-data:/var/lib/hybrid-ndr
+      - vendor-trust:/var/lib/hybrid-ndr/trust
     networks: [operator-access]
     read_only: true
     tmpfs: [/tmp]
@@ -419,17 +452,21 @@ services:
     restart: "no"
 
   control-api:
+    restart: unless-stopped
     profiles: [vendor]
     build:
       context: ../..
       dockerfile: infra/compose/python.Dockerfile
     command: ["python3", "apps/control-api/app.py", "--host", "0.0.0.0", "--port", "8081", "--database", "/var/lib/hybrid-ndr/control-api.sqlite3"]
     environment:
+      CONTROL_API_TLS_CERT_FILE: /var/lib/hybrid-ndr/pki/control-api-cert.pem
+      CONTROL_API_TLS_KEY_FILE: /var/lib/hybrid-ndr/pki/control-api-key.pem
+      CONTROL_API_CLIENT_CA_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
       CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
       CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
       CONTROL_API_ALLOW_INSECURE_FINGERPRINT_HEADER: ${CONTROL_API_ALLOW_INSECURE_FINGERPRINT_HEADER:-false}
-      CONTROL_API_PUBLIC_URL: ${CONTROL_API_PUBLIC_URL:-http://control-api:8081/v1}
-      MODEL_GATEWAY_PUBLIC_URL: ${MODEL_GATEWAY_PUBLIC_URL:-http://model-gateway:8082/v1/model/investigate}
+      CONTROL_API_PUBLIC_URL: ${CONTROL_API_PUBLIC_URL:-https://control-api:8081/v1}
+      MODEL_GATEWAY_PUBLIC_URL: ${MODEL_GATEWAY_PUBLIC_URL:-https://model-gateway:8082/v1/model/investigate}
       CONTROL_PORTAL_AUTH_MODE: ${CONTROL_PORTAL_AUTH_MODE:-jwt}
       CONTROL_PORTAL_AUTH_ISSUER: ${CONTROL_PORTAL_AUTH_ISSUER:-http://localhost:3011/oidc}
       CONTROL_PORTAL_AUTH_AUDIENCE: ${CONTROL_PORTAL_AUTH_AUDIENCE:-https://hybrid-ndr.cloud/api}
@@ -455,11 +492,16 @@ services:
       pki-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)"]
+      test: ["CMD", "python3", "-c", "import ssl,urllib.request; c=ssl.create_default_context(cafile='/var/lib/hybrid-ndr/pki/deployment-ca-cert.pem'); urllib.request.urlopen('https://127.0.0.1:8081/healthz',context=c,timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 10s
+    # Enterprise: python image runs as 65532:65532.
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   cloud-portal:
     profiles: [vendor]
@@ -467,7 +509,8 @@ services:
       context: ../..
       dockerfile: infra/compose/cloud-portal.Dockerfile
     environment:
-      CONTROL_API_INTERNAL_URL: http://control-api:8081
+      CONTROL_API_INTERNAL_URL: https://control-api:8081
+      NODE_EXTRA_CA_CERTS: /run/vendor-trust/deployment-ca-cert.pem
       CLOUD_PORTAL_PUBLIC_ORIGIN: ${CLOUD_PORTAL_PUBLIC_ORIGIN:-http://localhost:4180}
       LOGTO_PUBLIC_ENDPOINT: ${LOGTO_PUBLIC_ENDPOINT:-http://localhost:3011}
       LOGTO_CLOUD_PORTAL_CLIENT_ID: ${LOGTO_CLOUD_PORTAL_CLIENT_ID:-}
@@ -476,6 +519,8 @@ services:
       LOGTO_CLOUD_PORTAL_POST_LOGOUT_URI: ${LOGTO_CLOUD_PORTAL_POST_LOGOUT_URI:-http://localhost:4180}
       LOGTO_CLOUD_PORTAL_SCOPES: ${LOGTO_CLOUD_PORTAL_SCOPES:-}
       CONTROL_PORTAL_AUTH_AUDIENCE: ${CONTROL_PORTAL_AUTH_AUDIENCE:-https://hybrid-ndr.cloud/api}
+    volumes:
+      - vendor-trust:/run/vendor-trust:ro
     networks: [operator-access]
     ports:
       - "127.0.0.1:4180:4180"
@@ -503,6 +548,9 @@ services:
       dockerfile: infra/compose/python.Dockerfile
     command: ["python3", "services/model-gateway/app.py", "--host", "0.0.0.0", "--port", "8082"]
     environment:
+      MODEL_GATEWAY_TLS_CERT_FILE: /var/lib/hybrid-ndr/pki/model-gateway-cert.pem
+      MODEL_GATEWAY_TLS_KEY_FILE: /var/lib/hybrid-ndr/pki/model-gateway-key.pem
+      MODEL_GATEWAY_CLIENT_CA_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
       CONTROL_API_DATABASE: /var/lib/hybrid-ndr/control-api.sqlite3
       CONTROL_API_CA_KEY_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-key.pem
       CONTROL_API_CA_CERT_FILE: /var/lib/hybrid-ndr/pki/deployment-ca-cert.pem
@@ -538,7 +586,7 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/healthz', timeout=3)"]
+      test: ["CMD", "python3", "-c", "import ssl,urllib.request; c=ssl.create_default_context(cafile='/var/lib/hybrid-ndr/pki/deployment-ca-cert.pem'); c.load_cert_chain('/var/lib/hybrid-ndr/pki/health-client-cert.pem','/var/lib/hybrid-ndr/pki/health-client-key.pem'); urllib.request.urlopen('https://127.0.0.1:8082/healthz',context=c,timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -572,6 +620,7 @@ services:
       # so a compromised connector cannot overwrite the deployment's key.
       CONNECTOR_IDENTITY_WRITE_DIR: /var/lib/hybrid-ndr/connector/identity
     volumes:
+      - vendor-trust:/run/vendor-trust:ro
       - connector-state:/var/lib/hybrid-ndr/connector
       - ${HYBRID_NDR_STATE_DIR:-./.runtime}/identity:/var/lib/hybrid-ndr/identity:ro
       - ${HYBRID_NDR_STATE_DIR:-./.runtime}/updates:/var/lib/hybrid-ndr/updates
@@ -619,6 +668,7 @@ services:
     restart: unless-stopped
 
   dashboard:
+    restart: unless-stopped
     profiles: [customer]
     build:
       context: ../..
@@ -643,6 +693,11 @@ services:
     depends_on:
       local-api:
         condition: service_healthy
+    # Enterprise: dashboard runs as unprivileged `node` (see Dockerfile USER).
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   otel-collector:
     profiles: [customer]
@@ -712,6 +767,7 @@ services:
     restart: unless-stopped
 
   prometheus:
+    restart: unless-stopped
     profiles: [customer]
     image: prom/prometheus:v3.4.0
     command:
@@ -746,14 +802,21 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    # Enterprise: TSDB lives on its volume; image runs read-only otherwise.
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   blackbox-exporter:
+    restart: unless-stopped
     profiles: [customer]
     image: prom/blackbox-exporter:v0.27.0
     command: ["--config.file=/etc/blackbox_exporter/config.yml"]
     volumes:
       - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
-    networks: [local-data, outbound-control]
+    # Enterprise: monitoring only; no egress to the control-plane network.
+    networks: [local-data]
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
@@ -765,6 +828,7 @@ services:
       start_period: 5s
 
   postgres-exporter:
+    restart: unless-stopped
     profiles: [customer]
     image: prometheuscommunity/postgres-exporter:v0.17.1
     environment:
@@ -786,6 +850,7 @@ services:
       start_period: 5s
 
   grafana:
+    restart: unless-stopped
     profiles: [customer]
     image: grafana/grafana:12.0.0
     environment:
@@ -826,6 +891,11 @@ services:
     # Grafana is intentionally not published in the base Compose; the HTTPS
     # production overlay routes it through the ingress at /grafana/. The old
     # 127.0.0.1:3001 mapping was removed so development matches production.
+    # Enterprise: Grafana data lives on its volume; run contained otherwise.
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     depends_on:
       postgres:
         condition: service_healthy

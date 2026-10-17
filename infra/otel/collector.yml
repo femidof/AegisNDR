@@ -36,6 +36,7 @@ processors:
     timeout: 5s
 
 exporters:
+  nop: {}
   # Prometheus scrapes this endpoint over the internal local-data network.
   prometheus:
     endpoint: 0.0.0.0:9464
@@ -56,6 +57,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, attributes/privacy, batch]
+      exporters: [nop]
   telemetry:
     logs:
       level: info

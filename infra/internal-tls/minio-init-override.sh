@@ -77,9 +77,8 @@ if command -v mc >/dev/null 2>&1 && [ -d /prometheus-data ]; then
   case "$token" in
     eyJ[A-Za-z0-9_-]*.[A-Za-z0-9_-]*.[A-Za-z0-9_-]*)
       printf '%s\n' "$token" >/prometheus-data/minio-prometheus.jwt
-      # Owner-readable only: the JWT alone unlocks MinIO metrics, so it must
-      # not be world-readable on the shared volume.
-      chmod 0640 /prometheus-data/minio-prometheus.jwt
+      # Owner-readable only: the JWT alone unlocks MinIO metrics.
+      chmod 0600 /prometheus-data/minio-prometheus.jwt
       ;;
     *)
       echo "mc admin prometheus generate produced no usable scrape JWT; MinIO metrics will be unavailable" >&2
