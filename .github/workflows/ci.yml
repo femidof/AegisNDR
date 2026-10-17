@@ -52,6 +52,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: infra/compose/python-requirements.txt
 
       - name: Install pinned backend dependencies
         run: python3 -m pip install --requirement infra/compose/python-requirements.txt
