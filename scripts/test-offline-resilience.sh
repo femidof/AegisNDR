@@ -50,12 +50,34 @@ for service in "${required[@]}"; do
   done
 done
 
+# Prove the expected fixture records arrived from BOTH sensors, rather than
+# relying on a total that changes with diagnostic/stats events in sensor images.
+fixture_query="SELECT
+  countIf(source = 'suricata' AND signature = 'HYBRID NDR deterministic HTTP sensor acceptance') >= 1
+  AND countIf(source = 'suricata' AND signature = 'HYBRID NDR deterministic DNS sensor acceptance') >= 1
+  AND countIf(source = 'zeek' AND event_type = 'network.connection') >= 2
+  AND countIf(source = 'zeek' AND event_type = 'network.dns') >= 1
+  AND countIf(source = 'zeek' AND event_type = 'network.http') >= 1
+  FROM hybrid_ndr.network_events"
+deadline=$((SECONDS + 90))
+while :; do
+  fixture_ready=$("${compose[@]}" exec -T clickhouse sh -c 'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query "$1"' fixture-check "$fixture_query")
+  alerts_before=$("${compose[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT count(*) FROM local_state.alerts"')
+  if [[ "$fixture_ready" == 1 && "$alerts_before" -ge 1 ]]; then
+    break
+  fi
+  if (( SECONDS >= deadline )); then
+    echo "baseline fixture incomplete: expected_records=$fixture_ready alerts=$alerts_before" >&2
+    "${compose[@]}" logs --no-color --tail=60 vector detection-engine >&2
+    exit 1
+  fi
+  sleep 2
+done
 events_before=$("${compose[@]}" exec -T clickhouse sh -c 'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query "SELECT count() FROM hybrid_ndr.network_events"')
 alerts_before=$("${compose[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT count(*) FROM local_state.alerts"')
 checkpoint_before=$("${compose[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT completed_at FROM local_state.detection_checkpoints WHERE job_name=\$\$fast-10s\$\$"')
 investigations_before=$("${compose[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT count(*) FROM local_state.investigations"')
 cases_before=$("${compose[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT count(*) FROM local_state.cases"')
-[[ "$events_before" -ge 15 && "$alerts_before" -ge 1 ]] || { echo "baseline ingestion/detection did not produce data" >&2; exit 1; }
 echo "baseline: events=$events_before alerts=$alerts_before investigations=$investigations_before cases=$cases_before"
 
 # Pull the plug on the vendor control plane. The outbound connector is the

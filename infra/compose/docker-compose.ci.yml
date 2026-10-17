@@ -1,5 +1,11 @@
 # Test-only source builds. Production release images remain independently pinned.
 services:
+  clickhouse:
+    volumes:
+      - ../clickhouse/ci-retention.sql:/docker-entrypoint-initdb.d/002-ci-retention.sql:ro
+  operations-agent:
+    environment:
+      CLICKHOUSE_EVENT_RETENTION_DAYS: "3650"
   minio:
     image: hybrid-ndr-ci/minio:RELEASE.2025-04-22T22-12-26Z
     pull_policy: build
