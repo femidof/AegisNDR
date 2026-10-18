@@ -252,10 +252,10 @@ class SchemaMigrationTests(unittest.TestCase):
         self.assertIn("VALUES (1, 'base product state (init scripts)')", statements)
         for table in ("detection_checkpoints", "detection_alert_keys", "alert_evidence",
                       "detection_rules", "detection_suppressions", "integrations",
-                      "system_settings", "evidence_exports", "support_bundles"):
+                      "system_settings", "evidence_exports", "support_bundles", "response_records"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS \"local_state\".\"{table}\"", statements)
         versions = [params[0] for params in cursor.parameters]
-        self.assertEqual(versions, [2, 3, 4])
+        self.assertEqual(versions, [2, 3, 4, 5])
 
     def test_partially_migrated_volume_applies_only_pending_versions(self) -> None:
         adapter = self._adapter(2)
@@ -264,17 +264,17 @@ class SchemaMigrationTests(unittest.TestCase):
         statements = "\n".join(cursor.statements)
         self.assertNotIn("detection_checkpoints", statements)
         self.assertIn("\"detection_rules\"", statements)
-        self.assertEqual([params[0] for params in cursor.parameters], [3, 4])
+        self.assertEqual([params[0] for params in cursor.parameters], [3, 4, 5])
 
     def test_existing_alert_keys_gain_commit_time_integrity_check(self) -> None:
         adapter = self._adapter(3)
         adapter.ensure_detection_schema()
         cursor = adapter._scripted_driver.inspect()
         self.assertIn("DEFERRABLE INITIALLY DEFERRED", "\n".join(cursor.statements))
-        self.assertEqual([params[0] for params in cursor.parameters], [4])
+        self.assertEqual([params[0] for params in cursor.parameters], [4, 5])
 
     def test_current_volume_is_a_noop(self) -> None:
-        adapter = self._adapter(4)
+        adapter = self._adapter(5)
         adapter.ensure_detection_schema()
         cursor = adapter._scripted_driver.inspect()
         statements = "\n".join(cursor.statements)

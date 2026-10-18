@@ -383,6 +383,20 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
                 "ALTER CONSTRAINT detection_alert_keys_tenant_id_deployment_id_alert_id_fkey "
                 "DEFERRABLE INITIALLY DEFERRED",
             ]),
+            (5, "customer-local response workflow and journal", [
+                f"""CREATE TABLE IF NOT EXISTS {self._table('response_records')} (
+                    tenant_id text NOT NULL,
+                    deployment_id text NOT NULL,
+                    kind text NOT NULL,
+                    record_id text NOT NULL,
+                    state text NOT NULL,
+                    updated_at text NOT NULL,
+                    payload_json text NOT NULL,
+                    PRIMARY KEY (tenant_id, deployment_id, kind, record_id)
+                )""",
+                f"CREATE INDEX IF NOT EXISTS response_records_work ON {self._table('response_records')} "
+                "(tenant_id, deployment_id, kind, state, updated_at)",
+            ]),
         )
 
     def ensure_detection_schema(self) -> None:
@@ -394,6 +408,8 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
         the base DDL and only the additive migrations run.
         """
         with self._transaction() as cursor:
+            # API and detection processes may start together on an upgraded volume.
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('aegis-schema-migrations', 0))")
             cursor.execute(
                 f"""CREATE TABLE IF NOT EXISTS {self._table('schema_migrations')} (
                     version bigint PRIMARY KEY,
