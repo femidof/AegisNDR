@@ -150,9 +150,16 @@ service has its own provider routing and privacy checks.
   container solely because its health check reports `unhealthy`. Volume backups,
   restore procedures, and host capacity remain operational responsibilities.
 
-### Planned blocking and endpoint isolation
+### Blocking and endpoint isolation roadmap
 
-**Design direction — not implemented or enabled in this MVP.** Firewall blocking,
+**Simulation foundation; live enforcement is not enabled.** The Local API now
+includes scoped asset registration, response policy, evidence-bound proposals,
+simulation results, and a separate response journal. Approval and worker library
+components prepare the next integration stage. Concrete enforcement adapters,
+worker deployment, and dashboard controls remain to be implemented. See the
+[response workflow and API](docs/architecture/response-workflow.md).
+
+Firewall blocking,
 EDR isolation, and future endpoint agents should share a customer-local response
 workflow, with enforcement performed by the relevant integration:
 

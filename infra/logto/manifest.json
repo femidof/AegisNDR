@@ -26,6 +26,11 @@
         "users:manage": "Manage organization members and assignments",
         "audit:read": "Read the immutable audit trail",
         "response:approve": "Approve a response recommendation",
+        "response:read": "Read customer-local response actions and policy",
+        "response:propose": "Propose and cancel own response actions",
+        "response:manage": "Manage response policy and authoritative asset assignments",
+        "response:release": "Request release of owned response restrictions",
+        "response:stop": "Stop new response enforcement",
         "model-policy:manage": "Manage the local model privacy policy",
         "events:write": "Ingest normalized network events",
         "sensors:write": "Publish local sensor state"
@@ -141,6 +146,11 @@
           "users:manage",
           "audit:read",
           "response:approve",
+          "response:read",
+          "response:propose",
+          "response:manage",
+          "response:release",
+          "response:stop",
           "model-policy:manage"
         ],
         "control_api": [
@@ -180,6 +190,9 @@
           "integrations:manage",
           "deployments:manage",
           "audit:read",
+          "response:read",
+          "response:manage",
+          "response:stop",
           "model-policy:manage"
         ],
         "control_api": [
@@ -212,7 +225,11 @@
           "evidence:read",
           "evidence:export",
           "transmissions:read",
-          "response:approve"
+          "response:approve",
+          "response:read",
+          "response:propose",
+          "response:release",
+          "response:stop"
         ],
         "control_api": [
           "organizations:read",
@@ -240,7 +257,9 @@
           "cases:create",
           "cases:update",
           "evidence:read",
-          "transmissions:read"
+          "transmissions:read",
+          "response:read",
+          "response:propose"
         ],
         "control_api": [
           "organizations:read",
@@ -262,7 +281,8 @@
           "evidence:read",
           "transmissions:read",
           "rules:read",
-          "audit:read"
+          "audit:read",
+          "response:read"
         ],
         "control_api": [
           "organizations:read",

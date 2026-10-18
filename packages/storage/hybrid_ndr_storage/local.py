@@ -87,6 +87,18 @@ class LocalStore:
     def _migrate(self) -> None:
         self.connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS response_records (
+                tenant_id TEXT NOT NULL,
+                deployment_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, deployment_id, kind, record_id)
+            );
+            CREATE INDEX IF NOT EXISTS response_records_work
+                ON response_records (tenant_id, deployment_id, kind, state, updated_at);
             CREATE TABLE IF NOT EXISTS events (
                 event_id TEXT PRIMARY KEY,
                 tenant_id TEXT NOT NULL,

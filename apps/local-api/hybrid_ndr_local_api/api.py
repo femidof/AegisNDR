@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs
 
 from hybrid_ndr_agent import InvestigationRuntime
+from hybrid_ndr_agent.response import ResponseDenied, ResponseWorkflow
 from hybrid_ndr_auth import (
     DEFAULT_ROLE_PERMISSIONS,
     AuthenticationError,
@@ -131,6 +132,9 @@ class LocalAPI:
     ) -> None:
         self.store = store
         self.runtime = runtime
+        # Live adapters are deliberately not installed by the default API startup.
+        # Privileged integration configuration requires an explicit lab rollout.
+        self.response = ResponseWorkflow(store)
         self.authenticator = authenticator or build_authenticator(role_permissions=ROLE_PERMISSIONS)
         self.persistence = persistence
         self._standalone = standalone_settings()
@@ -171,6 +175,7 @@ class LocalAPI:
                 return self._error(403, "origin_not_allowed", "The request origin is not allowed.", request_id, cors)
             return APIResponse(204, None, cors)
         status = 500
+        auth = None
         try:
             payload = self._body(body)
             method = method.upper()
@@ -205,7 +210,13 @@ class LocalAPI:
             return APIResponse(response.status, response.body, (*response.headers, *cors))
         except APIError as exc:
             status = exc.status
+            if path.startswith("/api/v1/response/") and exc.status == 403 and auth is not None:
+                self._response_denial(auth, route, "permission_denied")
             return self._error(exc.status, exc.code, exc.message, request_id, cors)
+        except ResponseDenied as exc:
+            status = 409
+            self._response_denial(auth, route, str(exc))
+            return self._error(409, "response_denied", str(exc), request_id, cors)
         except NotFoundError as exc:
             status = 404
             return self._error(404, "not_found", str(exc).capitalize() + ".", request_id, cors)
@@ -235,6 +246,8 @@ class LocalAPI:
         query: Mapping[str, list[str]],
         request_id: str,
     ) -> APIResponse:
+        if path.startswith("/api/v1/response/"):
+            return self._response_dispatch(method, path, auth, body, query)
         if method == "POST" and path == "/api/v1/session/audit":
             self._audit(
                 auth, "authentication.succeeded", "session", auth.actor_id, request_id,
@@ -785,6 +798,56 @@ class LocalAPI:
     def _first(query: Mapping[str, list[str]], key: str) -> str | None:
         values = query.get(key, [])
         return values[0] if values else None
+
+    def _response_denial(self, auth, route, reason):
+        try:
+            self.response.record_denial(auth.tenant_id, auth.deployment_id, auth.actor_id, route, reason)
+        except Exception as exc:
+            log_exception("response.denial_audit_failed", exc, route=route)
+
+    def _response_dispatch(self, method, path, auth, body, query):
+        scope = (auth.tenant_id, auth.deployment_id)
+        if method == "GET":
+            auth.require("response:read")
+            if path == "/api/v1/response/policy":
+                return APIResponse(200, self.response.policy(*scope))
+            if path == "/api/v1/response/capabilities":
+                return APIResponse(200, self.response.capabilities())
+            for resource, kind in (("assets", "asset"), ("actions", "action"), ("journal", "journal")):
+                if path == "/api/v1/response/" + resource:
+                    items = self.response.list(*scope, kind,
+                        limit=_bounded_limit(self._first(query, "limit")),
+                        offset=_bounded_offset(self._first(query, "offset")))
+                    return APIResponse(200, {"items": items, "count": len(items)})
+            match = re.fullmatch(r"/api/v1/response/actions/([^/]+)", path)
+            if match:
+                return APIResponse(200, self.response.get_action(*scope, match.group(1)))
+        if method == "PATCH" and path == "/api/v1/response/policy":
+            auth.require("response:manage")
+            return APIResponse(200, self.response.update_policy(*scope, auth.actor_id, body))
+        if method == "POST" and path == "/api/v1/response/emergency-stop":
+            auth.require("response:stop")
+            return APIResponse(200, self.response.emergency_stop(*scope, auth.actor_id))
+        if method == "POST" and path == "/api/v1/response/assets":
+            auth.require("response:manage")
+            return APIResponse(201, self.response.register_asset(*scope, auth.actor_id, body))
+        if method == "POST" and path == "/api/v1/response/actions":
+            auth.require("response:propose")
+            return APIResponse(201, self.response.propose(*scope, auth.actor_id, body))
+        match = re.fullmatch(r"/api/v1/response/actions/([^/]+)/(approve|cancel|release)", path)
+        if method == "POST" and match:
+            action_id, operation = match.groups()
+            auth.require({"approve": "response:approve", "cancel": "response:propose",
+                          "release": "response:release"}[operation])
+            if operation == "approve":
+                result = self.response.approve(*scope, auth.actor_id, action_id, body)
+            else:
+                action = self.response.get_action(*scope, action_id)
+                if operation == "cancel" and action["proposed_by"] != auth.actor_id:
+                    auth.require("response:approve")
+                result = self.response.transition(*scope, auth.actor_id, action_id, operation, body)
+            return APIResponse(200, result)
+        raise APIError(404, "not_found", "Response route not found.")
 
     def _audit(self, auth: AuthContext, action: str, resource_type: str, resource_id: str, request_id: str, metadata: Mapping[str, Any] | None = None) -> None:
         self.store.audit.append(
