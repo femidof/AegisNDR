@@ -244,6 +244,23 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
 
   return {
     request,
+    async getResponseCapabilities() { return request("/api/v1/response/capabilities"); },
+    async getResponsePolicy() { return request("/api/v1/response/policy"); },
+    async updateResponsePolicy(changes) { return request("/api/v1/response/policy", { method: "PATCH", body: changes }); },
+    async stopResponse() { return request("/api/v1/response/emergency-stop", { method: "POST", body: {} }); },
+    async listResponseAssets(offset = 0) { return items(await request(`/api/v1/response/assets?limit=500&offset=${offset}`)); },
+    async registerResponseAsset(asset) { return request("/api/v1/response/assets", { method: "POST", body: asset }); },
+    async listResponseActions(offset = 0) { return items(await request(`/api/v1/response/actions?limit=50&offset=${offset}`)); },
+    async getResponseAction(id) { return request(`/api/v1/response/actions/${encodeURIComponent(id)}`); },
+    async proposeResponse(proposal) { return request("/api/v1/response/actions", { method: "POST", body: proposal }); },
+    async simulateResponseAlerts(body) { return request("/api/v1/response/simulations", { method: "POST", body }); },
+    async transitionResponse(id, operation, proposalHash) {
+      if (!["approve", "cancel", "release"].includes(operation)) throw new TypeError("Unsupported response action.");
+      return request(`/api/v1/response/actions/${encodeURIComponent(id)}/${operation}`, {
+        method: "POST", body: { proposal_hash: proposalHash },
+      });
+    },
+    async listResponseJournal(offset = 0) { return items(await request(`/api/v1/response/journal?limit=50&offset=${offset}`)); },
     async recordSession() { return request("/api/v1/session/audit", { method: "POST", body: {} }); },
     async getOverview() { return request("/api/v1/overview"); },
     async listAlerts() { return items(await request("/api/v1/alerts?limit=50")).map(mapAlert); },

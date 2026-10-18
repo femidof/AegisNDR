@@ -29,6 +29,7 @@ import { SensorsPage } from "./pages/SensorsPage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
 import { TrafficPage } from "./pages/TrafficPage.jsx";
 import { TransmissionsPage } from "./pages/TransmissionsPage.jsx";
+import { ResponsePage } from "./pages/ResponsePage.jsx";
 
 function App({ mode = "demo", api = null, user = null, onSignOut = null }) {
   const demoMode = mode === "demo";
@@ -260,6 +261,7 @@ function App({ mode = "demo", api = null, user = null, onSignOut = null }) {
   else if (activePage === "Alerts") page = <AlertsPage alerts={alerts} selectedAlertId={selectedAlertId} onSelect={setSelectedAlertId} onInvestigate={openAlert} onStatusChange={updateAlertStatus} />;
   else if (activePage === "Investigation") page = <InvestigationPage {...investigationProps} />;
   else if (activePage === "Cases") page = <CasesPage cases={cases} onCreateCase={createCase} onStatusChange={updateCaseStatus} canCreate={Boolean(selectedAlert)} />;
+  else if (activePage === "Response") page = <ResponsePage api={api} alerts={alerts} demoMode={demoMode} notify={notify} />;
   else if (activePage === "Traffic") page = <TrafficPage rows={traffic} />;
   else if (activePage === "Sensors") page = <SensorsPage items={sensorItems} />;
   else if (activePage === "AI Transmissions") page = <TransmissionsPage entries={transmissions} onLedger={(entry) => { setTransmission(entry || transmission); setLedgerOpen(true); }} />;

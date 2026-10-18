@@ -231,7 +231,47 @@ class ResponseWorkflow:
                for record in recent) >= policy["max_per_hour"]:
             raise ResponseDenied("hourly response authorization limit reached")
 
-    def propose(self, tenant, deployment, actor, body):
+    def simulate_alerts(self, tenant, deployment, actor, body):
+        fields(body, {"request_id", "limit"})
+        batch_id = identifier(body["request_id"])
+        limit = integer(body.get("limit", 20), 1, 50)
+        policy = self.policy(tenant, deployment)
+        if policy["mode"] != "simulate" or policy["emergency_stop"]:
+            raise ResponseDenied("batch simulation requires simulate mode without emergency stop")
+        with self.repository.transaction(tenant, deployment) as tx:
+            assets = tx.list("asset", limit=1001)
+        if len(assets) > 1000:
+            raise ResponseDenied("asset inventory exceeds supported capacity")
+        alerts = self.store.list_alerts(tenant, deployment_id=deployment, limit=limit)
+        actions, excluded = [], []
+        for alert in alerts:
+            matches = [(asset, address) for asset in assets for address in asset["addresses"]
+                       if alert["entity_id"] == address or (
+                           alert["entity_id"] == asset["asset_id"] and len(asset["addresses"]) == 1)]
+            if len(matches) != 1:
+                excluded.append({"alert_id": alert["alert_id"], "reason": "no unambiguous registered asset assignment"})
+                continue
+            asset, address = matches[0]
+            families = sorted(set(policy["allowed_families"]) & set(asset["bindings"]))
+            if not families:
+                excluded.append({"alert_id": alert["alert_id"], "reason": "no permitted family binding"})
+            for family in families:
+                proposal = {
+                    "request_id": digest([batch_id, alert["alert_id"], asset["asset_id"], family]),
+                    "asset_id": asset["asset_id"], "alert_id": alert["alert_id"],
+                    "family": family, "address": address,
+                    "duration_seconds": min(300, policy["max_duration_seconds"]),
+                }
+                try:
+                    actions.append(self.propose(tenant, deployment, actor, proposal, simulation_only=True))
+                except ResponseDenied as exc:
+                    excluded.append({"alert_id": alert["alert_id"], "family": family, "reason": str(exc)})
+        with self.repository.transaction(tenant, deployment) as tx:
+            tx.journal(actor, "response.simulation.completed", batch_id,
+                       {"action_count": len(actions), "exclusion_count": len(excluded), "enforcement_performed": False})
+        return {"items": actions, "count": len(actions), "excluded": excluded, "enforcement_performed": False}
+
+    def propose(self, tenant, deployment, actor, body, *, simulation_only=False):
         fields(body, {"request_id", "asset_id", "alert_id", "family", "address", "duration_seconds"})
         request_id = identifier(body["request_id"])
         family = body["family"]
@@ -241,14 +281,19 @@ class ResponseWorkflow:
         address = str(ipaddress.ip_address(body["address"]))
         duration = integer(body["duration_seconds"], 1, 3600)
         alert, events = self._evidence(tenant, deployment, alert_id)
-        request_hash = digest(body)
+        request_hash = digest({"actor_id": actor, "body": body})
         with self.repository.transaction(tenant, deployment) as tx:
             previous = tx.get("request", request_id, {"action_id": None})
             if previous["action_id"]:
                 if previous["request_hash"] != request_hash:
                     raise ResponseDenied("request_id was already used for a different proposal")
-                return tx.get("action", previous["action_id"])
+                existing = tx.get("action", previous["action_id"])
+                if simulation_only and existing["status"] != "simulated":
+                    raise ResponseDenied("simulation request ID belongs to a non-simulation action")
+                return existing
             policy = tx.get("policy", "current", dict(DEFAULT_POLICY))
+            if simulation_only and policy["mode"] != "simulate":
+                raise ResponseDenied("policy changed; batch simulation cannot create live proposals")
             asset = tx.get("asset", asset_id)
             self._validate(policy, asset, family, address, alert, events)
             if duration > policy["max_duration_seconds"]:
@@ -257,7 +302,9 @@ class ResponseWorkflow:
             proposal = {
                 "tenant_id": tenant, "deployment_id": deployment, "action_id": action_id,
                 "asset_id": asset_id, "asset_hash": digest(asset), "alert_id": alert_id,
+                "alert_hash": digest(alert),
                 "platform": asset["platform"],
+                "integration_revision": self._adapter_revision(asset["bindings"][family]["integration_id"]),
                 "evidence_hash": digest(events), "evidence_ids": [item["event_id"] for item in events],
                 "policy_version": policy["version"], "family": family, "action": FAMILIES[family],
                 "address": address, "binding": asset["bindings"][family], "duration_seconds": duration,
@@ -299,6 +346,9 @@ class ResponseWorkflow:
         adapter = self.adapters.get(proposal["binding"]["integration_id"])
         if adapter is None or adapter.family != proposal["family"]:
             raise ResponseDenied("no configured response adapter supports this target")
+        if (proposal["integration_revision"] is None or proposal["integration_revision"] !=
+                self._adapter_revision(proposal["binding"]["integration_id"])):
+            raise ResponseDenied("integration configuration changed; propose again")
         adapter.validate(proposal)
         action.update(status="queued", authorization={"actor_id": actor, "type": authorization_type,
                       "proposal_hash": action["proposal_hash"], "created_at": now().isoformat()})
@@ -309,12 +359,20 @@ class ResponseWorkflow:
         policy = tx.get("policy", "current", dict(DEFAULT_POLICY))
         asset = tx.get("asset", proposal["asset_id"])
         if (digest(proposal) != action["proposal_hash"] or digest(asset) != proposal["asset_hash"]
+                or digest(alert) != proposal.get("alert_hash")
                 or policy["version"] != proposal["policy_version"] or digest(events) != proposal["evidence_hash"]
                 or now() >= timestamp(proposal["authorization_expires_at"])):
             raise ResponseDenied("proposal, asset, evidence, policy or authorization window changed; propose again")
         self._validate(policy, asset, proposal["family"], proposal["address"], alert, events)
         self._capacity(tx, policy, action)
         return policy
+
+    def _adapter_revision(self, integration_id):
+        adapter = self.adapters.get(integration_id)
+        revision = getattr(adapter, "revision", None)
+        if adapter is not None and (not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision)):
+            raise ResponseDenied("adapter requires a SHA-256 configuration revision")
+        return revision
 
     def approve(self, tenant, deployment, actor, action_id, body):
         fields(body, {"proposal_hash"})
@@ -343,8 +401,12 @@ class ResponseWorkflow:
             elif operation == "release":
                 if action["status"] not in {"succeeded", "unknown", "verifying", "release_unknown"}:
                     raise ResponseDenied("action has no submitted restriction to release")
+                if action.get("lease_until") and timestamp(action["lease_until"]) > now():
+                    raise ResponseDenied("an observation is in progress; refresh before requesting release")
                 action["status"] = "release_queued"
                 action["release_requested_by"] = actor
+                # Discard a late observer's result rather than overwriting recovery intent.
+                action.update(lease_token=None, lease_until=None)
             else:
                 raise ValueError("unsupported response transition")
             tx.put("action", action_id, action)
