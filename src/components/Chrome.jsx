@@ -24,6 +24,7 @@ export const navItems = [
   { name: "Alerts", icon: Bell, badge: 3 },
   { name: "Investigation", icon: Notebook },
   { name: "Cases", icon: Briefcase },
+  { name: "Response", icon: ShieldCheck },
   { name: "Traffic", icon: ChartLineUp },
   { name: "Log Search", icon: MagnifyingGlass },
   { name: "Sensors", icon: HardDrives },

@@ -2415,6 +2415,106 @@ p {
   }
 }
 
+.standard-page.response-page { min-width: 0; }
+.response-page .page-header,
+.response-page .panel-heading { flex-wrap: wrap; }
+.response-page .panel-heading { min-height: 45px; padding: 0 0 12px; }
+.response-page .page-header > div:first-child { min-width: 0; flex: 1 1 240px; }
+.response-page .workflow-card { min-width: 0; font-size: 12px; }
+.response-layout,
+.response-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.response-page .workflow-card {
+  padding: 22px;
+}
+
+.response-page .workflow-card > p,
+.response-page fieldset > p,
+.response-notice p,
+.response-stop p {
+  color: var(--muted, #a3a9b3);
+  line-height: 1.65;
+}
+
+.response-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.response-notice > svg { flex-shrink: 0; color: var(--teal, #7cd6c4); }
+.response-notice p { margin: 7px 0; }
+.response-notice small { color: #a3a9b3; }
+.response-section { margin-top: 20px; }
+.response-integrations { margin-bottom: 20px; }
+.response-integration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.response-integration-grid article { min-width: 0; padding: 14px; background: #12171c; border: 1px solid #343b44; border-radius: 6px; overflow-wrap: anywhere; }
+.response-integration-grid p,
+.response-integration-grid small { color: #a3a9b3; line-height: 1.65; }
+.response-page fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.response-page fieldset:disabled { opacity: .65; }
+.response-page button:disabled { cursor: not-allowed; opacity: .55; }
+.response-page .field-label input {
+  min-width: 0;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #363e48;
+  border-radius: 6px;
+  background: #12171c;
+  color: #e5e6e9;
+  color-scheme: dark;
+}
+.response-checkboxes { display: grid; gap: 10px; margin-top: 18px; }
+.response-checkboxes label,
+.response-check { display: flex; align-items: flex-start; gap: 9px; line-height: 1.6; }
+.response-check { margin-top: 16px; }
+.response-check input,
+.response-checkboxes input { flex-shrink: 0; margin-top: 4px; accent-color: #ad93e6; }
+.response-stop,
+.response-detail { margin-top: 24px; padding-top: 20px; border-top: 1px solid #343b44; }
+.response-stop strong { color: #efc980; }
+.response-error { padding: 18px; margin-bottom: 20px; border: 1px solid #806633; border-radius: 8px; }
+.response-error p { margin-bottom: 0; }
+.response-asset-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.response-asset-list article { display: grid; gap: 7px; padding: 14px; border: 1px solid #343b44; border-radius: 6px; overflow-wrap: anywhere; }
+.response-asset-list span,
+.response-asset-list small { color: #a3a9b3; }
+.response-registration { margin-top: 18px; }
+.response-registration summary { cursor: pointer; padding-block: 12px; color: #c8b7ed; }
+.response-rule { border-top: 1px solid #343b44; padding-bottom: 14px; margin-top: 14px; }
+.response-rule > button { margin-top: 14px; }
+.response-table-wrap { overflow-x: auto; }
+.response-table { width: 100%; border-collapse: collapse; text-align: left; }
+.response-table th,
+.response-table td { padding: 14px 12px; border-bottom: 1px solid #343b44; vertical-align: top; overflow-wrap: anywhere; }
+.response-table th { font-size: 11px; color: #a3a9b3; text-transform: uppercase; letter-spacing: .06em; }
+.response-table small { display: block; margin-top: 6px; color: #a3a9b3; }
+.response-table .pill { white-space: normal; }
+.response-pagination,
+.response-buttons { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 18px; }
+.response-pagination { justify-content: flex-end; }
+.response-hash { overflow-wrap: anywhere; color: #aaa2bd; font-family: monospace; font-size: 12px; }
+.response-proposal-json { white-space: pre-wrap; overflow-wrap: anywhere; background: #12171c; padding: 14px; border-radius: 6px; }
+.response-detail .detail-list dd { overflow-wrap: anywhere; }
+.response-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+.response-page input:focus-visible,
+.response-page select:focus-visible,
+.response-page summary:focus-visible { outline: 2px solid #b79aea; outline-offset: 3px; }
+
+@media (max-width: 1100px) {
+  .response-layout,
+  .response-form-grid,
+  .response-asset-list,
+  .response-integration-grid { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 720px) {
   .app-body {
     padding: 0;

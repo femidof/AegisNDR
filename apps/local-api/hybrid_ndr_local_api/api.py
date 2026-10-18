@@ -812,7 +812,8 @@ class LocalAPI:
             if path == "/api/v1/response/policy":
                 return APIResponse(200, self.response.policy(*scope))
             if path == "/api/v1/response/capabilities":
-                return APIResponse(200, self.response.capabilities())
+                return APIResponse(200, {**self.response.capabilities(),
+                    "actor_id": auth.actor_id, "permissions": sorted(auth.permissions)})
             for resource, kind in (("assets", "asset"), ("actions", "action"), ("journal", "journal")):
                 if path == "/api/v1/response/" + resource:
                     items = self.response.list(*scope, kind,
@@ -834,6 +835,9 @@ class LocalAPI:
         if method == "POST" and path == "/api/v1/response/actions":
             auth.require("response:propose")
             return APIResponse(201, self.response.propose(*scope, auth.actor_id, body))
+        if method == "POST" and path == "/api/v1/response/simulations":
+            auth.require("response:propose")
+            return APIResponse(200, self.response.simulate_alerts(*scope, auth.actor_id, body))
         match = re.fullmatch(r"/api/v1/response/actions/([^/]+)/(approve|cancel|release)", path)
         if method == "POST" and match:
             action_id, operation = match.groups()

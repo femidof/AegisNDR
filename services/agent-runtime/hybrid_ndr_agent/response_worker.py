@@ -23,8 +23,6 @@ class ResponseWorker:
         self.workflow = workflow
 
     def run_once(self, tenant, deployment):
-        if not self.workflow.execution_enabled:
-            return 0
         with self.workflow.repository.transaction(tenant, deployment) as tx:
             actions = tx.list("action", states=WORK, limit=101)
         if len(actions) > 100:
@@ -39,6 +37,9 @@ class ResponseWorker:
         adapter = self.workflow.adapters.get(proposal["binding"]["integration_id"])
         if adapter is None or adapter.family != proposal["family"]:
             # Retain uncertainty / restrictions until the original adapter returns.
+            return 0
+        if proposal.get("integration_revision") != self.workflow._adapter_revision(proposal["binding"]["integration_id"]):
+            # The original provider/configuration is needed for safe reconciliation too.
             return 0
         alert, events, validation_error = None, None, None
         if snapshot["status"] == "queued":
@@ -56,6 +57,7 @@ class ResponseWorker:
             if action["status"] in {"executing", "releasing"}:
                 # A crashed worker might have sent the command. Never submit it again.
                 action["status"] = "unknown" if action["status"] == "executing" else "release_unknown"
+                action.update(lease_token=None, lease_until=None)
                 tx.put("action", action_id, action)
                 tx.journal("response-worker", "response.outcome.unknown", action_id,
                            {"reason": "worker lease expired"})
@@ -67,6 +69,8 @@ class ResponseWorker:
                 operation = "observe"
             elif action["status"] == "queued":
                 try:
+                    if not self.workflow.execution_enabled:
+                        raise ResponseDenied("new enforcement is disabled")
                     if validation_error:
                         raise ResponseDenied(validation_error)
                     self.workflow._revalidate(tx, action, alert, events)
@@ -96,7 +100,16 @@ class ResponseWorker:
         # Intent and lease are committed before any privileged remote operation.
         result, error = None, False
         try:
-            result = getattr(adapter, operation)(action)
+            if operation == "release":
+                # Reconcile even a human-requested retry before mutating a provider.
+                # Never release an unrelated restriction or repeat a pending release.
+                observed = adapter.observe(action)
+                if isinstance(observed, dict) and observed.get("owned") is True and observed.get("state") == "applied":
+                    result = adapter.release(action)
+                else:
+                    operation, result = "observe", observed
+            else:
+                result = getattr(adapter, operation)(action)
         except Exception:
             # Never persist provider exception text: it can contain tokens or evidence.
             error = True

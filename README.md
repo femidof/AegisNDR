@@ -155,8 +155,10 @@ service has its own provider routing and privacy checks.
 **Simulation foundation; live enforcement is not enabled.** The Local API now
 includes scoped asset registration, response policy, evidence-bound proposals,
 simulation results, and a separate response journal. Approval and worker library
-components prepare the next integration stage. Concrete enforcement adapters,
-worker deployment, and dashboard controls remain to be implemented. See the
+components prepare the next integration stage. The Response dashboard includes
+policy and asset setup, simulation of recent alerts, proposal review, and guarded
+approval/cancellation/release controls. Concrete enforcement adapters and worker
+deployment remain to be implemented. See the
 [response workflow and API](docs/architecture/response-workflow.md).
 
 Firewall blocking,
