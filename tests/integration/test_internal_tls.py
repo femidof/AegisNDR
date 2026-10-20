@@ -17,7 +17,7 @@ ENV_FILE = ROOT / "infra/compose/.env.example"
 def _config(*, response=False) -> dict:
     environment = os.environ.copy()
     if response:
-        environment.update(RESPONSE_CONFIG_PATH=str(ROOT / "infra/response/controller.example.json"),
+        environment.update(RESPONSE_CONFIG_DIR=str(ROOT / "infra/response"),
                            RESPONSE_SECRETS_DIR=str(ROOT / "infra/response"))
     result = subprocess.run(
         [
@@ -59,6 +59,9 @@ class InternalTlsTests(unittest.TestCase):
         self.assertNotIn("/run/response-secrets", {volume["target"] for volume in api["volumes"]})
         secrets = next(volume for volume in worker["volumes"] if volume["target"] == "/run/response-secrets")
         self.assertTrue(secrets["read_only"])
+        config_mount = next(volume for volume in api["volumes"] if volume["target"] == "/etc/aegisndr/response")
+        self.assertTrue(config_mount["read_only"])
+        self.assertTrue(Path(config_mount["source"]).is_dir())
         self.assertNotIn("docker.sock", str(worker["volumes"]))
         self.assertIn("USER 65532:65532", (ROOT / "infra/compose/python.Dockerfile").read_text())
         defaults = json.loads((ROOT / "infra/response/controller.example.json").read_text())

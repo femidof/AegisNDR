@@ -24,7 +24,7 @@ class ResponseWorkerAcceptanceTests(unittest.TestCase):
         self.addCleanup(store.close)
         workflow = configured_workflow(store)
         self.assertFalse(workflow.execution_enabled)
-        self.assertFalse(workflow.automatic_proposals)
+        self.assertEqual(workflow.automatic_proposals, os.environ.get("RESPONSE_EXPECT_AUTOMATIC", "0") == "1")
         self.assertFalse(workflow.adapters)
         expected = os.environ.get("RESPONSE_EXPECT_HEALTHY", "1") == "1"
         deadline = time.monotonic() + 35

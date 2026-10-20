@@ -27,15 +27,15 @@ if [[ -n "${COMPOSE_TEST_OVERRIDE:-}" ]]; then
   overlay+=(-f "$COMPOSE_TEST_OVERRIDE")
 fi
 if [[ "${RESPONSE_ACCEPTANCE:-0}" == 1 ]]; then
-  export RESPONSE_CONFIG_PATH="$repo_root/.runtime/response-acceptance.json"
+  export RESPONSE_CONFIG_DIR="$repo_root/.runtime/response-acceptance-config"
   export RESPONSE_SECRETS_DIR="$repo_root/.runtime/response-acceptance-secrets"
-  mkdir -p "$RESPONSE_SECRETS_DIR"
+  mkdir -p "$RESPONSE_SECRETS_DIR" "$RESPONSE_CONFIG_DIR"
   "${compose[@]}" config --format json | python3 -c '
 import json,sys
 env=json.load(sys.stdin)["services"]["local-api"]["environment"]
 print(json.dumps(dict(schema_version=1,enabled=False,automatic_proposals=False,
     tenant_id=env["TENANT_ID"],deployment_id=env["DEPLOYMENT_ID"],integrations=[])))
-' > "$RESPONSE_CONFIG_PATH"
+' > "$RESPONSE_CONFIG_DIR/response.json"
   overlay+=(-f infra/compose/docker-compose.response.yml --profile response)
 fi
 
@@ -135,10 +135,27 @@ if [[ "${RESPONSE_ACCEPTANCE:-0}" == 1 ]]; then
   check_worker() {
     "${overlay[@]}" run --rm --no-deps --entrypoint python3 \
       -e RUN_RESPONSE_WORKER_TESTS=1 -e "RESPONSE_EXPECT_HEALTHY=$1" \
+      -e "RESPONSE_EXPECT_AUTOMATIC=${2:-0}" \
       -v "$repo_root/tests:/app/tests:ro" local-api \
       -m unittest discover -s tests/integration -p test_response_worker.py
   }
   check_worker 1
+  # Replacing the host file must be visible through the directory bind mount.
+  # Execution stays disabled; this toggles only the inert scheduler flag.
+  for automatic in 1 0; do
+    python3 - "$RESPONSE_CONFIG_DIR/response.json" "$automatic" <<'PY'
+import json,sys
+from pathlib import Path
+path=Path(sys.argv[1])
+config=json.loads(path.read_text())
+assert config["enabled"] is False
+config["automatic_proposals"]=sys.argv[2] == "1"
+temporary=path.with_suffix(".tmp")
+temporary.write_text(json.dumps(config))
+temporary.replace(path)
+PY
+    check_worker 1 "$automatic"
+  done
   "${overlay[@]}" stop response-worker
   check_worker 0
   "${overlay[@]}" start response-worker

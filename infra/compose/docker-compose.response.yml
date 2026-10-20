@@ -3,11 +3,11 @@
 services:
   local-api:
     environment:
-      RESPONSE_CONFIG_FILE: /etc/aegisndr/response.json
+      RESPONSE_CONFIG_FILE: /etc/aegisndr/response/response.json
     volumes:
       - type: bind
-        source: ${RESPONSE_CONFIG_PATH:?Set RESPONSE_CONFIG_PATH to a reviewed controller JSON file}
-        target: /etc/aegisndr/response.json
+        source: ${RESPONSE_CONFIG_DIR:?Set RESPONSE_CONFIG_DIR to a nonsecret directory containing response.json}
+        target: /etc/aegisndr/response
         read_only: true
 
   response-worker:
@@ -19,7 +19,7 @@ services:
     environment:
       TENANT_ID: ${TENANT_ID}
       DEPLOYMENT_ID: ${DEPLOYMENT_ID}
-      RESPONSE_CONFIG_FILE: /etc/aegisndr/response.json
+      RESPONSE_CONFIG_FILE: /etc/aegisndr/response/response.json
       RESPONSE_HEALTH_FILE: /tmp/response-worker-health.json
       PERSISTENCE_PROFILE: production
       POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -35,8 +35,8 @@ services:
       PERSISTENCE_CA_FILE: /run/internal-tls/ca-cert.pem
     volumes:
       - type: bind
-        source: ${RESPONSE_CONFIG_PATH:?Set RESPONSE_CONFIG_PATH}
-        target: /etc/aegisndr/response.json
+        source: ${RESPONSE_CONFIG_DIR:?Set RESPONSE_CONFIG_DIR}
+        target: /etc/aegisndr/response
         read_only: true
       - type: bind
         source: ${RESPONSE_SECRETS_DIR:?Set RESPONSE_SECRETS_DIR to local worker credentials}

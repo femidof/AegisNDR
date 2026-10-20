@@ -106,7 +106,7 @@ Do not add credentials, private keys or real device inventories to Git.
 Set absolute paths in the customer's environment file:
 
 ```text
-RESPONSE_CONFIG_PATH=/etc/aegisndr/response.json
+RESPONSE_CONFIG_DIR=/etc/aegisndr/response-config
 RESPONSE_SECRETS_DIR=/etc/aegisndr/response-secrets
 ```
 
@@ -133,6 +133,13 @@ configuration revision. A malformed response configuration disables response in
 the API without taking down investigation. A worker configuration/read failure
 disables new submissions and attempts reconciliation/recovery with its last
 known configuration. Both paths remain scoped to the installed deployment.
+
+Place `response.json` inside `RESPONSE_CONFIG_DIR`; keep only nonsecret controller
+metadata in that directory. Mounting the directory makes atomic editor/rename
+updates visible to the worker. Private credentials belong in the separate secret
+directory. The API blocks new authorization when its cached revision no longer
+matches the worker, until the API is restarted. Use the emergency stop for an
+immediate stop to new authorization while preparing configuration changes.
 
 ## 3. Configure Defender when required
 
