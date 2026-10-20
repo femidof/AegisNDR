@@ -16,9 +16,8 @@ for dependency in ("packages/contracts-python", "packages/audit", "packages/stor
     sys.path.insert(0, str(ROOT / dependency))
 
 from hybrid_ndr_agent.response_adapters import document
-from hybrid_ndr_agent.response import digest
 from hybrid_ndr_transport import make_server
-from enforcer import Enforcer, validate_config
+from enforcer import Enforcer, configuration_revision, validate_config
 
 
 def exclusive_state_lock(database):
@@ -48,7 +47,7 @@ def main():
     config = document(args.config)
     validate_config(config)
     if args.print_revision:
-        print(digest(config))
+        print(configuration_revision(config))
         return 0
     if config["mode"] != "probe" and sys.platform != "linux":
         raise SystemExit("nftables enforcement is supported on Linux only")

@@ -336,6 +336,18 @@ class EnforcerSafetyTests(unittest.TestCase):
                 self.enforcer.apply(self.action_id, {**self.command, key: value})
         self.assertEqual(self.nft.applied, 0)
 
+    def test_controller_certificate_rotation_preserves_owned_recovery(self):
+        self.enforcer.apply(self.action_id, self.command)
+        original_revision = self.enforcer.revision
+        self.enforcer.connection.close()
+        rotated = {**self.config, "controller_fingerprints": ["c" * 64]}
+        self.enforcer = Enforcer(rotated, str(Path(self.directory.name) / "state.db"), nft=self.nft)
+        self.assertEqual(self.enforcer.revision, original_revision)
+        self.enforcer.restore()
+        self.assertEqual(self.enforcer.release(self.action_id)["state"], "released")
+        changed = {**rotated, "management_networks": ["192.0.2.7/32"]}
+        self.assertNotEqual(enforcer_module.configuration_revision(changed), original_revision)
+
     def test_http_headers_cannot_impersonate_controller_certificate(self):
         statuses = []
         result = self.enforcer.application({"PATH_INFO": "/v1/capabilities", "REQUEST_METHOD": "GET",

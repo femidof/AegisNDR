@@ -136,7 +136,7 @@ class NftablesAcceptanceTests(unittest.TestCase):
         authority, paths = make_pki(self.directory.name)
         self.config["controller_fingerprints"] = [paths["client_pin"]]
         self.config["management_networks"].append("127.0.0.1/32")
-        self.enforcer.revision = module.digest(self.config)
+        self.enforcer.revision = module.configuration_revision(self.config)
         with make_server("127.0.0.1", 0, self.enforcer.application,
                 certificate_file=paths["server_certificate"], private_key_file=paths["server_key"],
                 client_ca_file=paths["ca"]) as server:
@@ -145,7 +145,7 @@ class NftablesAcceptanceTests(unittest.TestCase):
             try:
                 with self.assertRaises(OutboundHTTPError):
                     JSONHTTPClient(endpoint, ca_file=paths["ca"], timeout_seconds=2).request("GET", "/v1/capabilities")
-                other_cert, other_key, _ = issue_client(authority, self.directory.name, "unapproved-controller")
+                other_cert, other_key, other_pin = issue_client(authority, self.directory.name, "unapproved-controller")
                 with self.assertRaises(OutboundHTTPError) as rejected:
                     JSONHTTPClient(endpoint, ca_file=paths["ca"], certificate_file=other_cert,
                         private_key_file=other_key).request("GET", "/v1/capabilities")
@@ -166,6 +166,11 @@ class NftablesAcceptanceTests(unittest.TestCase):
                 self.assertEqual(adapter.observe(action)["state"], "applied")
                 self.assertFalse(self.reachable("198.18.0.20"))
                 self.assertTrue(self.reachable("192.0.2.20"))
+                self.config["controller_fingerprints"] = [other_pin]
+                self.assertEqual(module.configuration_revision(self.config), self.enforcer.revision)
+                Path(paths["client_certificate"]).write_bytes(Path(other_cert).read_bytes())
+                Path(paths["client_key"]).write_bytes(Path(other_key).read_bytes())
+                self.assertEqual(adapter.observe(action)["state"], "applied")
                 adapter.release(action)
                 self.assertEqual(adapter.observe(action)["state"], "released")
                 self.assertTrue(self.reachable("198.18.0.20"))

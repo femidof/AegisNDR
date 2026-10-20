@@ -267,10 +267,18 @@ of silently claiming ownership. Back up both PostgreSQL and the enforcer SQLite
 database. Lost ownership state is not reconstructed from a name alone.
 
 Keep the original integration revision available until all its actions have been
-released. Changing targets, TLS metadata, management exceptions or adapter
+released. Changing targets, management exceptions or adapter configuration paths
 configuration pins invalidates new use of old proposals and can prevent recovery
 through a replacement configuration. Credential rotation at the same file path
 does not change the nonsecret configuration revision.
+
+Controller certificate fingerprints are authentication settings and are excluded
+from the native enforcement revision. Rotate with a temporary old/new pin overlap,
+restart the enforcer, replace the worker certificate/key at the same paths, then
+remove the old pin and restart the enforcer again. Existing restrictions retain
+their ownership and recovery binding throughout. Target, scope, management and
+enforcement-setting changes still invalidate the revision. The mTLS lab exercises
+certificate replacement while a restriction is active, then verifies release.
 
 The controller is single-node, with at most 1,000 registered assets, 1,000 pending
 approvals and 100 active restrictions. Unknown outcomes consume capacity.

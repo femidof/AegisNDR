@@ -80,6 +80,7 @@ jobs:
   survivable-ops:
     name: Offline resilience container acceptance
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     needs: backend
     steps:
       - name: Check out the reviewed source
@@ -88,4 +89,13 @@ jobs:
       - name: Run the offline resilience acceptance gate
         env:
           COMPOSE_TEST_OVERRIDE: infra/compose/docker-compose.ci.yml
+          COMPOSE_PROJECT_NAME: aegis-production-ci-${{ github.run_id }}
         run: bash scripts/test-offline-resilience.sh
+
+      - name: Verify production persistence TLS and supervised response worker
+        env:
+          ENV_FILE: infra/compose/.env.example
+          COMPOSE_TEST_OVERRIDE: infra/compose/docker-compose.ci.yml
+          COMPOSE_PROJECT_NAME: aegis-production-ci-${{ github.run_id }}
+          RESPONSE_ACCEPTANCE: "1"
+        run: bash scripts/test-internal-tls.sh

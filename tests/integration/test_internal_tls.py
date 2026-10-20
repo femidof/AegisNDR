@@ -86,8 +86,12 @@ class InternalTlsTests(unittest.TestCase):
             (item["target"] if isinstance(item, dict) else item.split(":")[1])
             for item in services["minio"]["volumes"]
         }
-        self.assertIn("/root/.minio/certs/public.crt", minio_mounts)
-        self.assertIn("/root/.minio/certs/private.key", minio_mounts)
+        self.assertIn("/run/internal-tls/public.crt", minio_mounts)
+        self.assertIn("/run/internal-tls/private.key", minio_mounts)
+        self.assertIn("--certs-dir", " ".join(services["minio"]["command"]))
+        clickhouse_tls = (ROOT / "infra/internal-tls/clickhouse-tls.xml").read_text()
+        self.assertIn('<tcp_port remove="1"/>', clickhouse_tls)
+        self.assertIn('<http_port remove="1"/>', clickhouse_tls)
 
         for service_name in ("local-api", "detection-engine", "operations-agent"):
             environment = services[service_name]["environment"]

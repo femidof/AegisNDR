@@ -1,0 +1,10 @@
+<config>
+  <openSSL>
+    <client>
+      <caConfig>/var/lib/clickhouse/internal-tls/ca-cert.pem</caConfig>
+      <verificationMode>strict</verificationMode>
+      <loadDefaultCAFile>false</loadDefaultCAFile>
+      <invalidCertificateHandler><name>RejectCertificateHandler</name></invalidCertificateHandler>
+    </client>
+  </openSSL>
+</config>

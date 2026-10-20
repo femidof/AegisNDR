@@ -79,6 +79,12 @@ def topology(value):
     return value
 
 
+def configuration_revision(config):
+    # Rotating controller authentication must not orphan existing restrictions.
+    # All target, scope, management and enforcement settings remain pinned.
+    return digest({key: value for key, value in config.items() if key != "controller_fingerprints"})
+
+
 class Nftables:
     def preflight(self, command, config):
         if config["mode"] == "gateway":
@@ -148,7 +154,7 @@ class Nftables:
 class Enforcer:
     def __init__(self, config, database, *, nft=None):
         validate_config(config)
-        self.config, self.revision = config, digest(config)
+        self.config, self.revision = config, configuration_revision(config)
         self.nft = nft or Nftables()
         self.connection = sqlite3.connect(database, check_same_thread=False, timeout=10)
         self.connection.execute("PRAGMA journal_mode=WAL")
