@@ -160,6 +160,7 @@ test("session and bounded health reads use the authenticated customer API routes
   await api.getSession();
   await api.getSystemHealth();
   assert.equal(requests[0].url, "/api/v1/session");
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
   assert.equal(requests[1].url, "/api/v1/system/health");
   assert.equal(requests[1].options.headers["X-Deployment-ID"], "deployment-1");
   assert.ok(requests[1].options.signal instanceof AbortSignal);
@@ -190,6 +191,7 @@ test("production shell and default settings render without fake status or missin
   const { App, SettingsPage } = await components();
   const shell = renderToStaticMarkup(createElement(App, { mode: "api", api: fixtureApi() }));
   assert.match(shell, /Health unavailable/);
+  assert.match(shell, /Policy: Unavailable/);
   assert.doesNotMatch(shell, /LLM STATUS|Enforce|Explicit Demo|DNS Tunneling Detected/);
   const settings = renderToStaticMarkup(createElement(SettingsPage, { demoMode: false }));
   assert.match(settings, /Policy unavailable/);

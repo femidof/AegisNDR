@@ -210,7 +210,7 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
   if (!deploymentId || !getAccessToken || !fetchImpl) throw new TypeError("Dashboard API requires deploymentId, getAccessToken, and fetch.");
   const normalizedBase = String(baseUrl).replace(/\/+$/, "");
 
-  async function request(path, { method = "GET", body, retry = true, signal } = {}) {
+  async function request(path, { method = "GET", body, retry = true, signal = AbortSignal.timeout(15_000) } = {}) {
     const token = await getAccessToken({ forceRefresh: false });
     const response = await fetchImpl(`${normalizedBase}${path}`, {
       method,
