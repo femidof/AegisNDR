@@ -210,7 +210,7 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
   if (!deploymentId || !getAccessToken || !fetchImpl) throw new TypeError("Dashboard API requires deploymentId, getAccessToken, and fetch.");
   const normalizedBase = String(baseUrl).replace(/\/+$/, "");
 
-  async function request(path, { method = "GET", body, retry = true } = {}) {
+  async function request(path, { method = "GET", body, retry = true, signal } = {}) {
     const token = await getAccessToken({ forceRefresh: false });
     const response = await fetchImpl(`${normalizedBase}${path}`, {
       method,
@@ -222,10 +222,11 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "same-origin",
+      ...(signal ? { signal } : {}),
     });
     if (response.status === 401 && retry) {
       await getAccessToken({ forceRefresh: true });
-      return request(path, { method, body, retry: false });
+      return request(path, { method, body, retry: false, signal });
     }
     let payload = null;
     if (response.status !== 204) {
@@ -244,6 +245,8 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
 
   return {
     request,
+    async getSession() { return request("/api/v1/session"); },
+    async getSystemHealth() { return request("/api/v1/system/health", { signal: AbortSignal.timeout(12_000) }); },
     async getResponseCapabilities() { return request("/api/v1/response/capabilities"); },
     async getResponsePolicy() { return request("/api/v1/response/policy"); },
     async updateResponsePolicy(changes) { return request("/api/v1/response/policy", { method: "PATCH", body: changes }); },

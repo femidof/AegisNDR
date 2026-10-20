@@ -1,22 +1,22 @@
 import { ArrowRight, Bell, Briefcase, ChartLineUp, Notebook, ShieldCheck } from "@phosphor-icons/react";
 import { MetricCard, PageHeader, Pill, Severity } from "../components/ui.jsx";
 
-export function OverviewPage({ alerts, cases, overview, sensors: sensorItems, onNavigate, onOpenAlert, dataSource }) {
+export function OverviewPage({ alerts, cases, overview, sensors: sensorItems, onNavigate, onOpenAlert, dataSource, demoMode }) {
   const events = overview?.events;
   const sensorCount = overview?.sensors?.length ?? sensorItems.length;
   return (
     <div className="standard-page">
       <PageHeader
-        eyebrow="NORTHSTAR FINANCIAL / PROD-EAST-01"
+        eyebrow={demoMode ? "DEMO DEPLOYMENT" : "CUSTOMER DEPLOYMENT"}
         title="Local Defense Overview"
-        description="Customer-resident detection is healthy. AI connectivity is optional and policy-controlled."
+        description="Local detection and investigation activity. AI access is optional and controlled by policy."
         actions={<Pill tone="local">{dataSource === "backend" ? "Local API connected" : "Local demo data"}</Pill>}
       />
       <div className="metrics-grid">
-        <MetricCard label="Indexed events" value={events === undefined ? "—" : String(events)} detail={`Across ${sensorCount} active sensors`} icon={ChartLineUp} />
+        <MetricCard label="Recent indexed events" value={events === undefined ? "—" : String(events)} detail={`Up to 1,000 records · ${sensorCount} enrolled sensors`} icon={ChartLineUp} />
         <MetricCard label="Completed investigations" value={overview ? String(overview.completed_investigations ?? 0) : "—"} detail="Persisted in the local data plane" icon={Notebook} tone="violet" />
-        <MetricCard label="Open alerts" value={String(alerts.filter((item) => item.status !== "Closed").length)} detail="1 high severity" icon={Bell} tone="orange" />
-        <MetricCard label="Active cases" value={String(cases.length)} detail="No breached SLA" icon={Briefcase} tone="green" />
+        <MetricCard label="Loaded open alerts" value={String(alerts.filter((item) => item.status !== "Closed").length)} detail={`${alerts.filter((item) => ["High", "Critical"].includes(item.severity)).length} high or critical`} icon={Bell} tone="orange" />
+        <MetricCard label="Loaded cases" value={String(cases.length)} detail="Recent records available to your role" icon={Briefcase} tone="green" />
       </div>
       <div className="overview-grid">
         <section className="panel overview-alerts">

@@ -115,6 +115,11 @@ p {
   box-shadow: 0 0 0 2px rgba(98, 213, 167, 0.08);
 }
 
+.health-dot--unavailable {
+  background: #747a87;
+  box-shadow: none;
+}
+
 .sovereignty-chip {
   justify-self: center;
   min-height: 32px;

@@ -4,6 +4,9 @@ import test from "node:test";
 import { alertStatusForApi, createDashboardApi, mapAlert, mapCase } from "../src/dashboardApi.js";
 import { readAppConfig } from "../src/appConfig.js";
 import { decodeJwtPayload, OidcError } from "../src/oidc.js";
+import { loadDashboard, trustStatus } from "../src/dashboardState.js";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 
 test("dashboard maps local API identifiers and statuses without demo-shaped assumptions", () => {
   const alert = mapAlert({
@@ -102,4 +105,106 @@ test("HTTP API mode is restricted to an explicit loopback development switch", (
 test("JWT parsing rejects opaque and malformed identity tokens", () => {
   assert.throws(() => decodeJwtPayload("opaque-token"), OidcError);
   assert.throws(() => decodeJwtPayload("a.invalid.c"), OidcError);
+});
+
+function fixtureApi() {
+  const values = {
+    getOverview: { events: 1 }, listAlerts: [{ id: "alert-1" }], listCases: [], listSensors: [],
+    searchEvents: [], listTransmissions: [], listAudit: { events: [], chainValid: true },
+    getModelPolicy: { enabled: false, level: "strict" }, listInvestigations: [],
+    getSession: { actor_id: "analyst", permissions: ["alerts:read"] }, listDetectionRules: [],
+    listSuppressions: [], listIntegrations: [], getSystemSettings: {}, listEvidenceExports: [], listSupportBundles: [],
+  };
+  return Object.fromEntries(Object.entries(values).map(([method, value]) => [method, async () => structuredClone(value)]));
+}
+
+test("permission denial in an optional view does not hide authorized alert data", async () => {
+  const api = fixtureApi();
+  api.listAudit = async () => { throw Object.assign(new Error("Permission denied"), { status: 403 }); };
+  const result = await loadDashboard(api);
+  assert.deepEqual(result.alerts, [{ id: "alert-1" }]);
+  assert.equal(result.dataSource, "backend");
+  assert.equal(result.errors.audit.status, 403);
+  assert.deepEqual(result.audit.events, []);
+  assert.equal(result.policy.enabled, false);
+});
+
+test("API outages return explicit unavailable data with no demo fallback", async () => {
+  const api = Object.fromEntries(Object.keys(fixtureApi()).map((method) => [method, async () => { throw new Error("Unavailable"); }]));
+  const result = await loadDashboard(api);
+  assert.equal(result.dataSource, "error");
+  assert.deepEqual(result.alerts, []);
+  assert.equal(result.policy, null);
+  assert.equal(result.rules, null);
+  assert.equal(result.session, null);
+});
+
+test("health badges require fresh evidence and never claim live demo health", () => {
+  const source = { demoMode: false, dataSource: "backend", health: { status: "healthy" }, observedAt: 99_000, policy: { enabled: false } };
+  assert.equal(trustStatus(source, 100_000).healthy, true);
+  assert.equal(trustStatus(source, 100_000).policy, "Disabled");
+  assert.equal(trustStatus(source, 129_000).healthy, false);
+  assert.equal(trustStatus(source, 98_000).healthy, false);
+  assert.equal(trustStatus({ ...source, dataSource: "error", health: null, policy: null }, 100_000).data, "Unavailable");
+  assert.equal(trustStatus({ ...source, demoMode: true }, 100_000).healthy, false);
+  assert.equal(trustStatus({ ...source, demoMode: true }, 100_000).node, "Preview");
+});
+
+test("session and bounded health reads use the authenticated customer API routes", async () => {
+  const requests = [];
+  const api = createDashboardApi({ deploymentId: "deployment-1", getAccessToken: async () => "token",
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response(JSON.stringify({ status: "healthy" }), { status: 200 });
+    } });
+  await api.getSession();
+  await api.getSystemHealth();
+  assert.equal(requests[0].url, "/api/v1/session");
+  assert.equal(requests[1].url, "/api/v1/system/health");
+  assert.equal(requests[1].options.headers["X-Deployment-ID"], "deployment-1");
+  assert.ok(requests[1].options.signal instanceof AbortSignal);
+});
+
+let renderedComponents;
+async function components() {
+  if (!renderedComponents) {
+    renderedComponents = import("esbuild").then(async ({ build }) => {
+      const output = await build({ stdin: { contents: `
+        export { App } from "./src/App.jsx";
+        export { SettingsPage } from "./src/pages/SettingsPage.jsx";
+        export { DetectionRulesPage } from "./src/pages/DetectionRulesPage.jsx";
+        export { IntegrationsPage } from "./src/pages/IntegrationsPage.jsx";
+      `, resolveDir: resolve("."), loader: "jsx" }, bundle: true, platform: "node", format: "cjs",
+        external: ["react", "react/*", "react-dom", "react-dom/*"], mainFields: ["module", "main"], jsx: "automatic", write: false });
+      const compiled = { exports: {} };
+      new Function("require", "module", "exports", output.outputFiles[0].text)(createRequire(import.meta.url), compiled, compiled.exports);
+      return compiled.exports;
+    });
+  }
+  return renderedComponents;
+}
+
+test("production shell and default settings render without fake status or missing-prop crashes", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { App, SettingsPage } = await components();
+  const shell = renderToStaticMarkup(createElement(App, { mode: "api", api: fixtureApi() }));
+  assert.match(shell, /Health unavailable/);
+  assert.doesNotMatch(shell, /LLM STATUS|Enforce|Explicit Demo|DNS Tunneling Detected/);
+  const settings = renderToStaticMarkup(createElement(SettingsPage, { demoMode: false }));
+  assert.match(settings, /Policy unavailable/);
+  assert.match(settings, /disabled=""/);
+  assert.doesNotMatch(settings, /Zero-retention verified/);
+});
+
+test("read-only administration pages render their records with mutation controls disabled", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { DetectionRulesPage, IntegrationsPage } = await components();
+  const rules = renderToStaticMarkup(createElement(DetectionRulesPage, { canManage: false,
+    rules: [{ rule_id: "rule-1", name: "Local rule", enabled: true, builtin: true }], suppressions: [] }));
+  assert.match(rules, /Local rule/);
+  assert.match(rules, /disabled=""/);
+  const integrations = renderToStaticMarkup(createElement(IntegrationsPage, { canManage: false, integrations: [] }));
+  assert.match(integrations, /disabled=""/);
 });

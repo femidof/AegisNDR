@@ -136,7 +136,7 @@ export function InvestigationNotebook({ alert, investigation, demoMode, runState
   );
 }
 
-export function EvidenceRail({ onEvidence, onLedger, demoMode, evidenceItems = [], transmission }) {
+export function EvidenceRail({ onEvidence, onLedger, demoMode, evidenceItems = [], transmission, policy }) {
   const visibleEvidence = demoMode ? evidence : evidenceItems.map((item) => ({
     id: item.id,
     label: item.type || "Local event",
@@ -156,14 +156,14 @@ export function EvidenceRail({ onEvidence, onLedger, demoMode, evidenceItems = [
       </section>
       <section className="rail-section ledger-summary">
         <header><h2>Transmission Ledger</h2><button className="inline-link" onClick={onLedger}>View ledger</button></header>
-        {demoMode || transmission ? <dl><div><dt>Status:</dt><dd className="success-text">{transmission?.status || "Completed"}</dd></div><div><dt>Mode:</dt><dd>{transmission?.mode || "Zero-Retention (Strict)"}</dd></div><div><dt>Retention:</dt><dd>{transmission?.retentionMode === "zero" ? "None" : "None"}</dd></div><div><dt>Direction:</dt><dd>{transmission?.direction || "Outbound (Minimized Only)"}</dd></div><div><dt>Bytes Transmitted:</dt><dd>{transmission?.bytes || "3.71 KB"}</dd></div><div><dt>Time:</dt><dd>{transmission?.time || "2026-08-05 14:12:31 UTC"}</dd></div><div><dt>Duration:</dt><dd>{transmission?.duration || "17s"}</dd></div><div><dt>Result:</dt><dd>{transmission?.result || "Success"}</dd></div><div><dt>Fail State:</dt><dd className="success-text">Fail-Closed</dd></div></dl> : <p className="rail-empty">No external transmission is recorded for this alert.</p>}
+        {demoMode || transmission ? <dl><div><dt>Status:</dt><dd>{transmission?.status ?? (demoMode ? "Completed" : "Unavailable")}</dd></div><div><dt>Mode:</dt><dd>{transmission?.mode ?? (demoMode ? "Zero-Retention (Strict)" : "Unavailable")}</dd></div><div><dt>Retention:</dt><dd>{demoMode ? "None (demo)" : transmission?.retentionMode || "Unavailable"}</dd></div><div><dt>Direction:</dt><dd>{transmission?.direction ?? (demoMode ? "Outbound (Minimized Only)" : "Unavailable")}</dd></div><div><dt>Bytes Transmitted:</dt><dd>{transmission?.bytes ?? (demoMode ? "3.71 KB" : "Unavailable")}</dd></div><div><dt>Time:</dt><dd>{transmission?.time ?? (demoMode ? "2026-08-05 14:12:31 UTC" : "Unavailable")}</dd></div><div><dt>Duration:</dt><dd>{transmission?.duration ?? (demoMode ? "17s" : "Unavailable")}</dd></div><div><dt>Result:</dt><dd>{transmission?.result ?? (demoMode ? "Success" : "Unavailable")}</dd></div><div><dt>Fail State:</dt><dd>{demoMode ? "Fail-Closed (demo)" : transmission?.failState || "Unavailable"}</dd></div></dl> : <p className="rail-empty">No external transmission is recorded for this alert.</p>}
       </section>
       <section className="rail-section removed-fields">
         <header><h2>Fields Removed (Strict Redaction)</h2><button className="inline-link" onClick={onLedger}>View list</button></header>
         <ul>{removed.map((field) => <li key={field}><Check size={15} weight="bold" />{field}</li>)}</ul>
         {!removed.length ? <p className="rail-empty">Redaction details appear after an investigation.</p> : null}
       </section>
-      <div className="rail-policy"><span>Policy: Enforce</span><span>Boundary: Local → Zero-Retention Gateway</span></div>
+      <div className="rail-policy"><span>Policy: {demoMode ? "Preview" : !policy ? "Unavailable" : policy.enabled === false ? "Disabled" : policy.level}</span><span>Boundary: Local → Zero-Retention Gateway</span></div>
     </aside>
   );
 }
@@ -196,7 +196,7 @@ export function InvestigationPage(props) {
     <div className="investigation-shell">
       <div className="investigation-scroll">
         <InvestigationNotebook {...props} />
-        <EvidenceRail onEvidence={props.onEvidence} onLedger={props.onLedger} demoMode={props.demoMode} evidenceItems={props.evidenceItems} transmission={props.transmission} />
+        <EvidenceRail onEvidence={props.onEvidence} onLedger={props.onLedger} demoMode={props.demoMode} evidenceItems={props.evidenceItems} transmission={props.transmission} policy={props.policy} />
       </div>
       <ActionDock {...props} />
     </div>

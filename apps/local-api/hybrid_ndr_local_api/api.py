@@ -253,6 +253,9 @@ class LocalAPI:
     ) -> APIResponse:
         if path.startswith("/api/v1/response/"):
             return self._response_dispatch(method, path, auth, body, query)
+        if method == "GET" and path == "/api/v1/session":
+            return APIResponse(200, {"actor_id": auth.actor_id, "tenant_id": auth.tenant_id,
+                "deployment_id": auth.deployment_id, "role": auth.role, "permissions": sorted(auth.permissions)})
         if method == "POST" and path == "/api/v1/session/audit":
             self._audit(
                 auth, "authentication.succeeded", "session", auth.actor_id, request_id,
