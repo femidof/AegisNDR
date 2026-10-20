@@ -172,7 +172,7 @@ export function mapEvent(record) {
     destination,
     protocol: [String(record.protocol || "").toUpperCase(), record.dst_port].filter(Boolean).join("/"),
     bytes: bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`,
-    verdict: record.event_type === "network.alert" ? "Suspicious" : "Allowed",
+    verdict: record.event_type === "network.alert" ? "Suspicious" : "Observed",
     type: titleCase(record.event_type),
     detail: details.signature || details.query || `${record.source || "local"} event`,
     captured: formatUtc(record.event_time),

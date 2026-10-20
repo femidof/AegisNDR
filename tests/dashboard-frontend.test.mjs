@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { alertStatusForApi, createDashboardApi, mapAlert, mapCase } from "../src/dashboardApi.js";
+import { alertStatusForApi, createDashboardApi, mapAlert, mapCase, mapEvent } from "../src/dashboardApi.js";
 import { readAppConfig } from "../src/appConfig.js";
 import { decodeJwtPayload, OidcError } from "../src/oidc.js";
 import { loadDashboard, trustStatus } from "../src/dashboardState.js";
@@ -175,6 +175,7 @@ async function components() {
         export { SettingsPage } from "./src/pages/SettingsPage.jsx";
         export { DetectionRulesPage } from "./src/pages/DetectionRulesPage.jsx";
         export { IntegrationsPage } from "./src/pages/IntegrationsPage.jsx";
+        export { TrafficPage } from "./src/pages/TrafficPage.jsx";
       `, resolveDir: resolve("."), loader: "jsx" }, bundle: true, platform: "node", format: "cjs",
         external: ["react", "react/*", "react-dom", "react-dom/*"], mainFields: ["module", "main"], jsx: "automatic", write: false });
       const compiled = { exports: {} };
@@ -209,4 +210,62 @@ test("read-only administration pages render their records with mutation controls
   assert.match(rules, /disabled=""/);
   const integrations = renderToStaticMarkup(createElement(IntegrationsPage, { canManage: false, integrations: [] }));
   assert.match(integrations, /disabled=""/);
+});
+
+
+test("traffic chart uses actual event timestamps and bounded sample groups", async () => {
+  const { trafficSeries, trafficGroups } = await import("../src/trafficData.js");
+  const now = Date.parse("2026-10-20T22:00:00Z");
+  const rows = [0, 4000, 5000, 59000, 60000, -1000].map((age) => ({ eventTime: new Date(now - age).toISOString(), protocolValue: "tcp" }));
+  rows.push({ eventTime: "invalid", protocolValue: "udp" });
+  const buckets = trafficSeries(rows, now);
+  assert.equal(buckets.length, 12);
+  assert.equal(buckets[11], 2);
+  assert.equal(buckets[10], 1);
+  assert.equal(buckets[0], 1);
+  assert.equal(buckets.reduce((sum, value) => sum + value, 0), 4);
+  assert.deepEqual(trafficGroups(rows, "protocolValue"), [["tcp", 6], ["udp", 1]]);
+  assert.deepEqual(trafficGroups([{ protocol: "DNS/TXT" }], "protocolValue"), [["DNS", 1]]);
+});
+
+test("traffic view renders a truthful waiting state and sample charts", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { TrafficPage } = await components();
+  const waiting = renderToStaticMarkup(createElement(TrafficPage, {}));
+  assert.match(waiting, /Waiting for the local API/);
+  assert.match(waiting, /not packets per second/);
+  assert.doesNotMatch(waiting, /Live local index|>Allowed</);
+  const preview = renderToStaticMarkup(createElement(TrafficPage, { demoMode: true, rows: [mapEvent({ event_id: "e1", event_time: new Date().toISOString(), source: "zeek", protocol: "tcp", src_ip: "10.0.0.1", dst_ip: "10.0.0.2" })] }));
+  assert.match(preview, /Preview/);
+  assert.match(preview, /role="img"/);
+  assert.match(preview, /Observed/);
+  assert.match(preview, /10.0.0.2/);
+});
+
+test("dashboard permits only its configured identity origin and forwards deployment scope", async () => {
+  const { spawn } = await import("node:child_process");
+  const { createServer } = await import("node:net");
+  const { once } = await import("node:events");
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const child = spawn(process.execPath, ["infra/compose/dashboard-server.mjs"], { env: { ...process.env, PORT: String(port), LOGTO_PUBLIC_ENDPOINT: "http://localhost:3011" }, stdio: "ignore" });
+  try {
+    let response;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try { response = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(500) }); break; }
+      catch { await new Promise((resolve) => setTimeout(resolve, 25)); }
+    }
+    assert.ok(response, "dashboard did not start");
+    const csp = response.headers.get("content-security-policy");
+    assert.match(csp, /connect-src 'self' http:\/\/localhost:3011;/);
+    assert.doesNotMatch(csp, /connect-src[^;]*\*/);
+    assert.equal(response.status, 200);
+  } finally {
+    child.kill();
+    if (child.exitCode === null) await once(child, "exit");
+  }
 });

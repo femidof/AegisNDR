@@ -298,3 +298,26 @@ It covers online and offline bundles, checksum/signature verification before
 privilege, single-use enrollment, local P-256 identity, idempotent upgrades,
 post-install health checks, and data-preserving uninstall. The installer never
 deploys vendor Logto or the vendor control API on the customer device.
+
+
+## Live traffic view and alert-only operation
+
+Suricata and Zeek can capture directly from the selected Linux interface with
+`SENSOR_CAPTURE_MODE=live`, `SENSOR_NETWORK_MODE=host` and `CAPTURE_INTERFACE`.
+Capture uses NET_RAW only, with a read-only filesystem and no-new-privileges;
+NET_ADMIN is not granted. Suricata uses UID 0 because Docker clears effective
+capture capabilities for a nonroot UID. Its image makes only the vendor's public
+configuration files readable, avoiding extra file-access capabilities.
+
+The authenticated **Traffic** page reads the latest 100 indexed observations
+within five minutes every three seconds. It shows a 60-second activity chart,
+protocol and destination counts, sensor sources and a scrolling event table.
+Pause/resume and explicit stale/disconnected states distinguish stored results
+from a working feed. Counts describe the bounded event sample, not total link
+throughput or packets per second. Flow completion and ingestion can add delay.
+
+Passive capture observes only packets reaching the chosen interface. Monitoring
+other LAN devices requires an authorized mirrored switch feed or gateway sensor.
+Alerts are observations for review; automatic blocking/isolation remains off by
+default and must not be enabled as part of setting up this view. A read-only Logto
+role can view traffic and alerts without permission to change policy or respond.

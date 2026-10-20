@@ -345,7 +345,7 @@ function App({ mode = "demo", api = null, user = null, onSignOut = null }) {
   else if (activePage === "Investigation") page = <InvestigationPage {...investigationProps} />;
   else if (activePage === "Cases") page = <CasesPage cases={cases} onCreateCase={createCase} onStatusChange={updateCaseStatus} canCreate={Boolean(selectedAlert)} />;
   else if (activePage === "Response") page = <ResponsePage api={api} alerts={alerts} demoMode={demoMode} notify={notify} />;
-  else if (activePage === "Traffic") page = <TrafficPage rows={traffic} />;
+  else if (activePage === "Traffic") page = <TrafficPage rows={traffic} api={api} demoMode={demoMode} />;
   else if (activePage === "Sensors") page = <SensorsPage items={sensorItems} />;
   else if (activePage === "Log Search") page = <LogSearchPage results={searchResults} onSearch={async (criteria) => { setSearchResults(demoMode ? traffic : await api.searchEvents(criteria)); }} />;
   else if (activePage === "Detection Rules") page = <DetectionRulesPage rules={rules} suppressions={suppressions} canManage={can("rules:manage")}
@@ -370,7 +370,7 @@ function App({ mode = "demo", api = null, user = null, onSignOut = null }) {
     supportBundles={supportBundles} onCreateSupportBundle={(body) => changeResource(() => api.createSupportBundle(body), (item) => setSupportBundles((items) => [item, ...(items || [])]), "Support bundle created")}
     onDownloadSupportBundle={(id) => downloadArtifact(() => api.downloadSupportBundle(id))} />;
 
-  const viewResource = { Overview: "overview", Alerts: "alerts", Investigation: "investigations", Cases: "cases", Sensors: "sensors", Traffic: "traffic", "Log Search": "traffic", "Detection Rules": "rules", Integrations: "integrations", Audit: "audit", "AI Transmissions": "transmissions", "System Settings": "systemSettings" }[activePage];
+  const viewResource = { Overview: "overview", Alerts: "alerts", Investigation: "investigations", Cases: "cases", Sensors: "sensors", "Log Search": "traffic", "Detection Rules": "rules", Integrations: "integrations", Audit: "audit", "AI Transmissions": "transmissions", "System Settings": "systemSettings" }[activePage];
   if (!demoMode && readErrors[viewResource]) page = <div className="standard-page"><section className="panel workflow-card" role="alert"><h1>{activePage} unavailable</h1><p>{readErrors[viewResource].status === 403 ? "Your current role does not have permission to read this view." : "The local API could not load this view. Retry after checking the service connection."}</p></section></div>;
 
   return (

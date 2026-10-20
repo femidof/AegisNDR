@@ -10,7 +10,7 @@ export function OverviewPage({ alerts, cases, overview, sensors: sensorItems, on
         eyebrow={demoMode ? "DEMO DEPLOYMENT" : "CUSTOMER DEPLOYMENT"}
         title="Local Defense Overview"
         description="Local detection and investigation activity. AI access is optional and controlled by policy."
-        actions={<Pill tone="local">{dataSource === "backend" ? "Local API connected" : "Local demo data"}</Pill>}
+        actions={<Pill tone="local">{demoMode ? "Preview data" : dataSource === "backend" ? "Local API connected" : "Connection unavailable"}</Pill>}
       />
       <div className="metrics-grid">
         <MetricCard label="Recent indexed events" value={events === undefined ? "—" : String(events)} detail={`Up to 1,000 records · ${sensorCount} enrolled sensors`} icon={ChartLineUp} />
@@ -33,17 +33,13 @@ export function OverviewPage({ alerts, cases, overview, sensors: sensorItems, on
           </div>
         </section>
         <section className="panel">
-          <div className="panel-heading"><div><span className="eyebrow">LOCAL OPERATIONS</span><h2>Detection continuity</h2></div><Pill tone="completed">Operational</Pill></div>
+          <div className="panel-heading"><div><span className="eyebrow">LOCAL OPERATIONS</span><h2>Detection continuity</h2></div><Pill tone="local">Local processing</Pill></div>
           <div className="continuity-card">
             <ShieldCheck size={38} weight="duotone" />
             <h3>Detection remains local</h3>
             <p>Alerts, evidence, timelines, and cases continue working without AI or cloud connectivity.</p>
           </div>
-          <div className="system-bars">
-            <div><span>Sensor availability</span><b>99.98%</b><i style={{ width: "99%" }} /></div>
-            <div><span>Local storage</span><b>63%</b><i style={{ width: "63%" }} /></div>
-            <div><span>LLM availability</span><b>Available</b><i style={{ width: "96%" }} /></div>
-          </div>
+          <dl className="detail-list"><div><dt>Sensor records loaded</dt><dd>{sensorCount}</dd></div><div><dt>Traffic visibility</dt><dd>Open Traffic for recent observations</dd></div><div><dt>AI availability</dt><dd>Check the configured model policy</dd></div></dl>
         </section>
       </div>
     </div>

@@ -194,7 +194,7 @@ services:
       - -ec
       - |
         mkdir -p /var/log/sensors/suricata
-        chown -R 998:998 /var/log/sensors/suricata
+        chown -R 0:0 /var/log/sensors/suricata
         exec "$$@"
       - sensor-fixture
       - python3
@@ -215,10 +215,13 @@ services:
     restart: "no"
 
   suricata:
-    # The pinned image's private config is owned by its suricata account (998).
-    user: "998:998"
+    # Docker clears effective capture capabilities for a nonroot UID.
+    # Use UID 0 with NET_RAW alone, read-only storage and no-new-privileges.
+    user: "0:0"
     profiles: [customer]
-    image: jasonish/suricata:7.0.10
+    build:
+      context: ../..
+      dockerfile: infra/suricata/Dockerfile
     entrypoint: [/bin/sh, /opt/hybrid-ndr/run-sensor.sh]
     environment:
       SENSOR_CAPTURE_MODE: ${SENSOR_CAPTURE_MODE:-pcap}
