@@ -73,7 +73,7 @@ scrape_configs:
           - http://dashboard:4173/healthz
           - http://operations-agent:9108/healthz
           - http://otel-collector:13133/
-          - http://minio:9000/minio/health/ready
+          - https://minio:9000/minio/health/ready
           - http://grafana:3000/api/health
     relabel_configs:
       - source_labels: [__address__]
@@ -88,7 +88,7 @@ scrape_configs:
     params:
       module: [tcp_connect]
     static_configs:
-      - targets: [clickhouse:9000]
+      - targets: [clickhouse:9440]
         labels:
           service: clickhouse
     relabel_configs:

@@ -48,7 +48,7 @@ step "bringing up the customer stack with the internal-TLS overlay"
 "${overlay[@]}" --profile customer up -d --build >/dev/null
 
 step "waiting for required services"
-required=(postgres clickhouse minio suricata zeek vector detection-engine local-api operations-agent prometheus grafana)
+required=(postgres clickhouse minio suricata zeek vector detection-engine local-api operations-agent prometheus grafana blackbox-exporter)
 if [[ "${RESPONSE_ACCEPTANCE:-0}" == 1 ]]; then required+=(response-worker); fi
 deadline=$((SECONDS + 240))
 for service in "${required[@]}"; do
@@ -68,6 +68,24 @@ for service in "${required[@]}"; do
     sleep 3
   done
 done
+
+step "verifying the monitoring probes use trusted TLS endpoints"
+"${overlay[@]}" exec -T local-api python3 - <<'PY'
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+def probe(target, module):
+    url = "http://blackbox-exporter:9115/probe?" + urlencode({"target": target, "module": module})
+    with urlopen(url, timeout=10) as response:
+        lines = response.read(100000).decode().splitlines()
+    return next(line for line in lines if line.startswith("probe_success "))
+
+assert probe("https://minio:9000/minio/health/ready", "http_2xx") == "probe_success 1"
+assert probe("clickhouse:9440", "tcp_connect") == "probe_success 1"
+assert probe("http://minio:9000/minio/health/ready", "http_2xx") == "probe_success 0"
+assert probe("clickhouse:9000", "tcp_connect") == "probe_success 0"
+print("MinIO HTTPS and ClickHouse native TLS probes passed; plaintext probes failed as expected")
+PY
 
 step "verifying minio-init completed the TLS bucket provisioning"
 for _ in $(seq 1 30); do

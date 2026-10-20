@@ -130,3 +130,8 @@ services:
     volumes:
       - ../internal-tls/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  blackbox-exporter:
+    volumes:
+      - ../internal-tls/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro

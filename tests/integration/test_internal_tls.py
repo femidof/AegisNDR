@@ -106,6 +106,22 @@ class InternalTlsTests(unittest.TestCase):
         local_api_dsn = services["local-api"]["environment"]["POSTGRES_URL"]
         self.assertTrue(local_api_dsn.startswith("postgresql://"))
 
+    def test_monitoring_probes_follow_the_encrypted_endpoints(self):
+        services = _config()
+        mounts = {item["target"]: item for item in services["blackbox-exporter"]["volumes"]}
+        self.assertTrue(mounts["/run/internal-tls/ca-cert.pem"]["read_only"])
+        self.assertTrue(mounts["/etc/blackbox_exporter/config.yml"]["source"].endswith("internal-tls/blackbox.yml"))
+        config = (ROOT / "infra/internal-tls/blackbox.yml").read_text()
+        self.assertIn("tls: true", config)
+        self.assertIn("ca_file: /run/internal-tls/ca-cert.pem", config)
+        self.assertNotIn("insecure_skip_verify", config)
+        prometheus = (ROOT / "infra/internal-tls/prometheus.yml").read_text()
+        self.assertIn("https://minio:9000/minio/health/ready", prometheus)
+        self.assertIn("targets: [clickhouse:9440]", prometheus)
+        self.assertNotIn("http://minio:9000/minio/health/ready", prometheus)
+        for identity in ("TENANT_ID", "DEPLOYMENT_ID"):
+            self.assertEqual(services["operations-agent"]["environment"][identity], services["local-api"]["environment"][identity])
+
     def test_internal_data_plane_has_no_plaintext_listeners(self) -> None:
         services = _config()
         for private_service in ("postgres", "clickhouse", "minio"):
