@@ -156,6 +156,7 @@ class PostgresDetectionTransactionTests(unittest.TestCase):
         if os.environ.get("PERSISTENCE_CA_FILE"):
             dsn = postgres_dsn_with_tls(dsn, os.environ["PERSISTENCE_CA_FILE"])
         adapter = PostgresMetadataAdapter(dsn)
+        self.addCleanup(adapter.close)
         adapter.ensure_detection_schema()
         tenant, deployment, event_id = (str(uuid.uuid4()) for _ in range(3))
         evidence = NormalizedEvent(

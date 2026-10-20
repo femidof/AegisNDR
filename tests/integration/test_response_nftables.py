@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -20,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/backend"))
 import support
 from hybrid_ndr_agent.response import now
+from hybrid_ndr_agent.response_adapters import EnforcerAdapter
+from hybrid_ndr_transport import JSONHTTPClient, make_server
+from hybrid_ndr_transport.http import OutboundHTTPError
 
 spec = importlib.util.spec_from_file_location("response_enforcer", ROOT / "services/response-enforcer/enforcer.py")
 module = importlib.util.module_from_spec(spec)
@@ -125,3 +129,45 @@ class NftablesAcceptanceTests(unittest.TestCase):
             self.assertEqual(self.enforcer.observe(command["action_id"])["state"], "released")
             self.assertTrue(forwarded(version), version)
             self.enforcer.release(command["action_id"])
+
+    def test_pinned_mtls_adapter_enforces_and_releases_real_rules(self):
+        from test_transport_limits import make_pki, issue_client
+
+        authority, paths = make_pki(self.directory.name)
+        self.config["controller_fingerprints"] = [paths["client_pin"]]
+        self.config["management_networks"].append("127.0.0.1/32")
+        self.enforcer.revision = module.digest(self.config)
+        with make_server("127.0.0.1", 0, self.enforcer.application,
+                certificate_file=paths["server_certificate"], private_key_file=paths["server_key"],
+                client_ca_file=paths["ca"]) as server:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            endpoint = "https://127.0.0.1:" + str(server.server_address[1])
+            try:
+                with self.assertRaises(OutboundHTTPError):
+                    JSONHTTPClient(endpoint, ca_file=paths["ca"], timeout_seconds=2).request("GET", "/v1/capabilities")
+                other_cert, other_key, _ = issue_client(authority, self.directory.name, "unapproved-controller")
+                with self.assertRaises(OutboundHTTPError) as rejected:
+                    JSONHTTPClient(endpoint, ca_file=paths["ca"], certificate_file=other_cert,
+                        private_key_file=other_key).request("GET", "/v1/capabilities")
+                self.assertEqual(rejected.exception.status, 403)
+                self.assertTrue(self.reachable("198.18.0.20"))
+
+                command = self.command()
+                action = dict(action_id=command["action_id"], proposal_hash=command["proposal_hash"],
+                    restriction_expires_at=command["restriction_expires_at"], proposal=dict(tenant_id="lab",
+                    deployment_id="lab", platform="linux", family="agent", address=command["address"],
+                    authorization_expires_at=command["command_expires_at"],
+                    binding=dict(integration_id="endpoint", target_id="endpoint")))
+                adapter = EnforcerAdapter(dict(id="endpoint", type="linux_endpoint", platforms=["linux"],
+                    targets={"endpoint": [command["address"]]}, endpoint=endpoint,
+                    ca_file=paths["ca"], certificate_file=paths["client_certificate"], private_key_file=paths["client_key"],
+                    remote_revision=self.enforcer.revision), "lab", "lab")
+                self.assertEqual(adapter.submit(action), action["action_id"])
+                self.assertEqual(adapter.observe(action)["state"], "applied")
+                self.assertFalse(self.reachable("198.18.0.20"))
+                self.assertTrue(self.reachable("192.0.2.20"))
+                adapter.release(action)
+                self.assertEqual(adapter.observe(action)["state"], "released")
+                self.assertTrue(self.reachable("198.18.0.20"))
+            finally:
+                server.shutdown()

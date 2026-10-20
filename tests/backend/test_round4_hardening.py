@@ -92,6 +92,9 @@ class _RecordingConnection:
     def cursor(self):
         return _RecordingCursor(self._driver)
 
+    def close(self):
+        self._driver.closed_connections += 1
+
     def __enter__(self):
         return self
 
@@ -110,6 +113,7 @@ class _RecordingPsycopg:
         self.rowcounts: list[int] = []
         self.rowcount = 1
         self.connections = 0
+        self.closed_connections = 0
 
     def connect(self, _dsn, **_kwargs):
         self.connections += 1
@@ -183,6 +187,19 @@ class ClickHouseNoneDeploymentTests(unittest.TestCase):
 
 class ProductionIdempotencyAndTransactionTests(unittest.TestCase):
     """Items 20, 21, 28: alert idempotency race and read-then-write atomicity."""
+
+    def test_connection_closes_when_deferred_commit_raises(self):
+        driver = _RecordingPsycopg()
+
+        class FailedCommitConnection(_RecordingConnection):
+            def __exit__(self, *_args):
+                raise RuntimeError("deferred commit rejected")
+
+        driver.connect = lambda *_args, **_kwargs: FailedCommitConnection(driver)
+        adapter = _production_adapter(driver)
+        with self.assertRaisesRegex(RuntimeError, "deferred commit rejected"):
+            adapter._execute("SELECT 1")
+        self.assertEqual(driver.closed_connections, 1)
 
     def test_save_detected_alert_with_existing_fingerprint_creates_no_duplicate(self):
         driver = _RecordingPsycopg()

@@ -466,13 +466,33 @@ class _ProductionWSGIServer(ThreadingHTTPServer):
             return
         try:
             super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                try:
+                    request.do_handshake()
+                except OSError:
+                    self.shutdown_request(request)
+                    return
+            super().process_request_thread(request, client_address)
         finally:
             self._request_slots.release()
 
-    def server_bind(self) -> None:
-        super().server_bind()
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        request.settimeout(_WSGIRequestHandler.timeout)
         if self.ssl_context is not None:
-            self.socket = self.ssl_context.wrap_socket(self.socket, server_side=True)
+            try:
+                # The bounded worker handles handshakes, never the accept loop.
+                request = self.ssl_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+            except BaseException:
+                request.close()
+                raise
+        return request, client_address
 
 
 def make_server(

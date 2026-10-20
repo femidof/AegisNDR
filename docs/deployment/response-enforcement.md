@@ -285,7 +285,11 @@ temporary, isolated management/data networks and grants `NET_ADMIN` only inside
 its disposable containers. It verifies native endpoint IPv4/IPv6 isolation,
 management access, durable restart recovery, release/replay behavior, forwarded
 gateway traffic and kernel timeout without controller polling. It also checks
-that an unrelated firewall table survives. CI runs this gate independently.
+that an unrelated firewall table survives, and drives the real native adapter
+over mTLS through apply, observation and release. Missing client certificates and
+valid but unpinned controller certificates must be rejected. CI runs this gate
+independently; separate regressions exercise connection capacity and stalled TLS
+handshakes, and render the response overlay to verify its credential boundaries.
 
 Run backend discovery, frontend suites and the production build as well. These
 checks do not replace acceptance against the customer's actual Defender tenant,

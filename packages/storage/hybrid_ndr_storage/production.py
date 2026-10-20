@@ -12,7 +12,7 @@ import statistics
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
@@ -232,7 +232,8 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
     @contextmanager
     def _transaction(self) -> Iterator[Any]:
         psycopg = self._driver_loader("psycopg")
-        with psycopg.connect(self.dsn, connect_timeout=max(1, int(self.timeout_seconds))) as connection:
+        # The pinned driver's context can raise during commit before closing.
+        with closing(psycopg.connect(self.dsn, connect_timeout=max(1, int(self.timeout_seconds)))) as connection, connection:
             with connection.cursor() as cursor:
                 yield cursor
 

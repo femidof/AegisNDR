@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -13,12 +14,17 @@ INTERNAL_TLS_COMPOSE = ROOT / "infra/compose/docker-compose.internal-tls.yml"
 ENV_FILE = ROOT / "infra/compose/.env.example"
 
 
-def _config() -> dict:
+def _config(*, response=False) -> dict:
+    environment = os.environ.copy()
+    if response:
+        environment.update(RESPONSE_CONFIG_PATH=str(ROOT / "infra/response/controller.example.json"),
+                           RESPONSE_SECRETS_DIR=str(ROOT / "infra/response"))
     result = subprocess.run(
         [
             "docker", "compose", "--project-directory", str(ROOT),
             "--file", str(BASE_COMPOSE), "--file", str(INTERNAL_TLS_COMPOSE),
             "--env-file", str(ENV_FILE), "--profile", "customer",
+            *(["--file", str(ROOT / "infra/compose/docker-compose.response.yml"), "--profile", "response"] if response else []),
             "config", "--format", "json",
         ],
         cwd=ROOT,
@@ -26,12 +32,39 @@ def _config() -> dict:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=environment,
     )
     return json.loads(result.stdout)["services"]
 
 
 @unittest.skipUnless(shutil.which("docker"), "Docker Compose is unavailable")
 class InternalTlsTests(unittest.TestCase):
+    def test_response_overlay_preserves_scope_and_credential_boundaries(self):
+        services = _config(response=True)
+        worker, api = services["response-worker"], services["local-api"]
+        self.assertEqual(set(worker["networks"]), {"local-data", "response-egress"})
+        self.assertNotIn("response-egress", api["networks"])
+        self.assertTrue(worker["read_only"])
+        self.assertEqual(worker["cap_drop"], ["ALL"])
+        self.assertFalse(worker.get("cap_add"))
+        self.assertFalse(worker.get("privileged"))
+        self.assertEqual(worker["restart"], "unless-stopped")
+        self.assertEqual(worker["profiles"], ["response"])
+        self.assertEqual(worker["environment"]["PERSISTENCE_PROFILE"], "production")
+        self.assertEqual(worker["environment"]["PERSISTENCE_CA_FILE"], "/run/internal-tls/ca-cert.pem")
+        self.assertTrue(worker["environment"]["CLICKHOUSE_URL"].startswith("https://"))
+        self.assertTrue(worker["environment"]["MINIO_ENDPOINT"].startswith("https://"))
+        for identity in ("TENANT_ID", "DEPLOYMENT_ID"):
+            self.assertEqual(worker["environment"][identity], api["environment"][identity])
+        self.assertNotIn("/run/response-secrets", {volume["target"] for volume in api["volumes"]})
+        secrets = next(volume for volume in worker["volumes"] if volume["target"] == "/run/response-secrets")
+        self.assertTrue(secrets["read_only"])
+        self.assertNotIn("docker.sock", str(worker["volumes"]))
+        self.assertIn("USER 65532:65532", (ROOT / "infra/compose/python.Dockerfile").read_text())
+        defaults = json.loads((ROOT / "infra/response/controller.example.json").read_text())
+        self.assertFalse(defaults["enabled"])
+        self.assertFalse(defaults["automatic_proposals"])
+
     def test_internal_tls_overlay_encrypts_every_credential_bearing_hop(self) -> None:
         services = _config()
 

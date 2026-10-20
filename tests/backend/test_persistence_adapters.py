@@ -36,6 +36,9 @@ class _Cursor:
 
 
 class _Connection:
+    def close(self):
+        pass
+
     def __enter__(self):
         return self
 
@@ -209,6 +212,9 @@ class _ScriptedConnection:
 
     def cursor(self):
         return self.cursor_instance
+
+    def close(self):
+        pass
 
     def __enter__(self):
         return self
