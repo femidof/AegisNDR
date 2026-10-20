@@ -65,3 +65,25 @@ connector heartbeats and failed ingestion; local monitoring also stops if the
 whole host is down. Keep certificate renewal and restore exercises on the
 maintenance calendar. Avoid restarting the shared host daemon just to test one
 application's restart policy.
+
+
+## Follow-up on 20 October 2026
+
+The live host retained `unless-stopped` on the checked core services; the updater
+had restarted once and recovered. The operations agent was running but unhealthy.
+Its dependency checks succeeded and the installed deployment's five detection
+checkpoints were current. An older test deployment's checkpoints were also
+present. The unscoped operations query collapsed both deployments into one
+job-name dictionary, allowing old timestamps to overwrite current ones.
+
+The correction requires `TENANT_ID` and `DEPLOYMENT_ID` for the operations agent
+and filters sensor and detection-checkpoint reads by both values. Old deployment
+records are retained. Never delete history or relax freshness thresholds to clear
+this alarm. Compose supplies the installed identity; direct service invocations
+must supply it as well. Regression tests assert both parameterized query scopes
+and reject missing scope. Verify the corrected service against the real database
+and check `/healthz` and detection ages after replacing only this service.
+
+A Prometheus target being `up` means its metrics/probe endpoint was scraped.
+Inspect `probe_success` and `hybrid_ndr_operations_up` to determine actual service
+health; a successful scrape alone does not establish that the target is healthy.

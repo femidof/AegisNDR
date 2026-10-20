@@ -69,6 +69,8 @@ class OperationsConfig:
     clickhouse_password: str
     minio_url: str
     migration_file: Path
+    tenant_id: str
+    deployment_id: str
     ca_file: str = ""
     poll_seconds: int = 15
     retention_interval_seconds: int = 86_400
@@ -90,6 +92,10 @@ class OperationsConfig:
         clickhouse_password = environ.get("CLICKHOUSE_PASSWORD", "").strip()
         if not postgres_url or not clickhouse_user or not clickhouse_password:
             raise ValueError("POSTGRES_URL, CLICKHOUSE_USER, and CLICKHOUSE_PASSWORD are required")
+        tenant_id = environ.get("TENANT_ID", "").strip()
+        deployment_id = environ.get("DEPLOYMENT_ID", "").strip()
+        if not tenant_id or not deployment_id:
+            raise ValueError("TENANT_ID and DEPLOYMENT_ID are required")
         ca_file = environ.get("PERSISTENCE_CA_FILE", "").strip()
         if ca_file:
             from hybrid_ndr_storage.tls import postgres_dsn_with_tls
@@ -97,6 +103,8 @@ class OperationsConfig:
             postgres_url = postgres_dsn_with_tls(postgres_url, ca_file)
         return cls(
             postgres_url=postgres_url,
+            tenant_id=tenant_id,
+            deployment_id=deployment_id,
             clickhouse_url=_endpoint(
                 environ.get("CLICKHOUSE_URL", "http://clickhouse:8123").strip(), "CLICKHOUSE_URL"
             ),
@@ -131,8 +139,12 @@ class OperationsConfig:
 
 
 class PostgresOperations:
-    def __init__(self, dsn: str, *, connect: Callable[..., Any] | None = None) -> None:
+    def __init__(self, dsn: str, *, tenant_id: str, deployment_id: str, connect: Callable[..., Any] | None = None) -> None:
+        if not tenant_id.strip() or not deployment_id.strip():
+            raise ValueError("tenant and deployment scope are required")
         self.dsn = dsn
+        self.tenant_id = tenant_id
+        self.deployment_id = deployment_id
         if connect is None:
             import psycopg
             connect = psycopg.connect
@@ -153,8 +165,9 @@ class PostgresOperations:
                               COALESCE(sum(events_per_second), 0)::double precision,
                               EXTRACT(epoch FROM (%s::timestamptz - max(last_seen)))::double precision
                        FROM local_state.sensors
+                       WHERE tenant_id = %s AND deployment_id = %s
                        GROUP BY sensor_type, status""",
-                    (now,),
+                    (now, self.tenant_id, self.deployment_id),
                 )
                 sensors = [
                     {
@@ -169,8 +182,9 @@ class PostgresOperations:
                 cursor.execute(
                     """SELECT job_name,
                               EXTRACT(epoch FROM (%s::timestamptz - completed_at))::double precision
-                       FROM local_state.detection_checkpoints""",
-                    (now,),
+                       FROM local_state.detection_checkpoints
+                       WHERE tenant_id = %s AND deployment_id = %s""",
+                    (now, self.tenant_id, self.deployment_id),
                 )
                 detection_jobs = {
                     str(row[0]): max(0.0, float(row[1])) for row in cursor.fetchall()

@@ -737,6 +737,8 @@ services:
       dockerfile: infra/compose/python.Dockerfile
     command: ["python3", "services/operations-agent/app.py"]
     environment:
+      TENANT_ID: ${TENANT_ID}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID}
       POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
