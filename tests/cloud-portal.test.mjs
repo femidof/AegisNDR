@@ -64,7 +64,7 @@ test("portal frontend has no customer analyst API route and labels its metadata 
   assert.doesNotMatch(api, /\/api\/v1\/(alerts|events|investigations|cases|evidence)/);
   assert.match(api, /\/v1\/portal\/deployments/);
   assert.match(markup, /Aegis Cloud Console/);
-  assert.match(compose, /cloud-portal:\n\s+profiles: \[vendor\]/);
+  assert.match(compose, /^  cloud-portal:\r?\n(?: {4}[^\r\n]*\r?\n)*? {4}profiles: \[vendor\]/m);
   assert.match(compose, /127\.0\.0\.1:4180:4180/);
   assert.match(compose, /CONTROL_PORTAL_AUTH_AUDIENCE/);
   assert.match(dockerfile, /USER node/);

@@ -9,6 +9,8 @@ const ACTION_NAMES = {
   unknown: "Outcome unknown", release_queued: "Release requested", releasing: "Submitting release",
   release_verifying: "Verifying release", release_unknown: "Release outcome unknown",
   released: "Release verified", cancelled: "Cancelled", invalidated: "Authorization invalidated",
+  expired: "Approval expired",
+  failed: "Failed before submission",
 };
 const EMPTY = { capabilities: { execution_enabled: false, permissions: [], families: [] }, policy: null,
   assets: [], actions: [], journal: [], loadedAt: null };
@@ -36,10 +38,10 @@ export function ResponsePage({ api, alerts = [], demoMode, notify }) {
   const batchRequest = useRef(null);
   const generation = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ quiet = false } = {}) => {
     if (!api || demoMode) return;
     const current = ++generation.current;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     try {
       const [capabilities, policy, firstAssets, nextAssets, actions, journal] = await Promise.all([
         api.getResponseCapabilities(), api.getResponsePolicy(), api.listResponseAssets(0),
@@ -59,6 +61,12 @@ export function ResponsePage({ api, alerts = [], demoMode, notify }) {
     load();
     return () => { generation.current += 1; };
   }, [load]);
+
+  useEffect(() => {
+    if (!api || demoMode || busy || loading || error) return undefined;
+    const timer = window.setInterval(() => load({ quiet: true }), 10_000);
+    return () => window.clearInterval(timer);
+  }, [api, demoMode, busy, loading, error, load]);
 
   const { capabilities, policy, assets, actions, journal } = snapshot;
   const can = (permission) => !demoMode && !error && !loading && !busy &&
@@ -100,8 +108,10 @@ export function ResponsePage({ api, alerts = [], demoMode, notify }) {
         </div>
       </section>
       {error ? <div className="response-error" role="alert"><strong>{error.status === 403 ? "Response access required" : "Response data could not be refreshed"}</strong><p>{error.message}</p><p>Controls are disabled until response data can be loaded.</p></div> : null}
+      {capabilities.configuration_error ? <div className="response-error" role="alert">Response configuration is invalid. Live enforcement is disabled; local investigation remains available.</div> : null}
       <section className="panel workflow-card response-integrations">
         <div className="panel-heading"><h2>Integration readiness</h2><Pill>{liveReady ? "Execution enabled" : "Execution disabled"}</Pill></div>
+        <p>Worker: {capabilities.worker?.healthy ? "heartbeat current" : "unavailable or not configured"}. Automatic proposal scheduling: {capabilities.automatic_proposals ? "configured" : "off"}.</p>
         <div className="response-integration-grid">{Object.entries(FAMILY_NAMES).map(([family, name]) => {
           const integrations = capabilities.families.find((item) => item.family === family)?.integrations || [];
           return <article key={family}><strong>{name}</strong><p>{snapshot.loadedAt && !error ? integrations.length ? integrations.join(", ") : "No enforcement connection configured" : "Readiness unavailable"}</p><small>{family === "firewall" ? "Requires a gateway that can verify rule ownership and expiration." : "Requires stable device identity, management connectivity, and verified release."}</small></article>;
@@ -111,7 +121,7 @@ export function ResponsePage({ api, alerts = [], demoMode, notify }) {
         <section className="panel workflow-card">
           <div className="panel-heading"><h2>Response policy</h2><Pill tone="local">{policy?.mode || "Off / unavailable"}</Pill></div>
           <p>Allow specific device groups and response families before simulation. Critical assets are excluded.</p>
-          {policyAvailable ? <PolicyForm key={policy.version} policy={policy} canManage={can("response:manage")} busy={busy}
+          {policyAvailable ? <PolicyForm key={policy.version} policy={policy} canManage={can("response:manage")} busy={busy} liveReady={liveReady && capabilities.worker?.healthy}
             onSave={(changes) => perform(() => api.updateResponsePolicy(changes), "Response policy saved")} />
             : <p>{loading ? "Loading response policy…" : "No policy loaded."}</p>}
           <div className="response-stop">
@@ -191,23 +201,27 @@ function Pagination({ offset, count, disabled, onChange, label }) {
   return <nav className="response-pagination" aria-label={`${label} pagination`}><button className="outline-button" disabled={disabled || offset === 0} onClick={() => onChange(Math.max(0, offset - 50))}>Previous</button><span>{count ? `${offset + 1}–${offset + count}` : "No records on this page"}</span><button className="outline-button" disabled={disabled || count < 50} onClick={() => onChange(offset + 50)}>Next</button></nav>;
 }
 
-function PolicyForm({ policy, canManage, onSave, busy }) {
+function PolicyForm({ policy, canManage, onSave, busy, liveReady }) {
   const [mode, setMode] = useState(policy.mode);
   const [groups, setGroups] = useState(policy.allowed_groups.join(", "));
   const [families, setFamilies] = useState(policy.allowed_families);
   const [duration, setDuration] = useState(policy.max_duration_seconds);
   const [rules, setRules] = useState(policy.autonomous_rules);
+  const [limits, setLimits] = useState({ max_active: policy.max_active, max_per_hour: policy.max_per_hour,
+    max_evidence_age_seconds: policy.max_evidence_age_seconds, approval_ttl_seconds: policy.approval_ttl_seconds });
   const [resume, setResume] = useState(false);
   return <form onSubmit={(event) => { event.preventDefault(); onSave({ version: policy.version, mode,
     allowed_groups: groups.split(",").map((value) => value.trim()).filter(Boolean), allowed_families: families,
+    ...Object.fromEntries(Object.entries(limits).map(([key, value]) => [key, Number(value)])),
     max_duration_seconds: Number(duration), autonomous_rules: rules, emergency_stop: policy.emergency_stop && !resume }); }}>
     <fieldset disabled={!canManage || busy}><legend className="response-sr-only">Response policy settings</legend>
-      <label className="field-label">Mode<select value={mode} onChange={(event) => setMode(event.target.value)}><option value="off">Off</option><option value="simulate">Simulate only</option>{!["off", "simulate"].includes(policy.mode) ? <option value={policy.mode} disabled>{policy.mode} · configured externally</option> : null}</select></label>
+      <label className="field-label">Mode<select value={mode} onChange={(event) => setMode(event.target.value)}><option value="off">Off</option><option value="simulate">Simulate only</option><option value="approval_required" disabled={!liveReady}>Human approval required{!liveReady ? " · integration/worker required" : ""}</option><option value="autonomous" disabled={!liveReady}>Bounded automatic policy{!liveReady ? " · integration/worker required" : ""}</option></select></label>
       <label className="field-label">Allowed device groups<input value={groups} onChange={(event) => setGroups(event.target.value)} placeholder="Comma-separated group IDs" /></label>
       <div className="response-checkboxes">{Object.entries(FAMILY_NAMES).map(([family, name]) => <label key={family}><input type="checkbox" checked={families.includes(family)} onChange={(event) => setFamilies((current) => event.target.checked ? [...current, family] : current.filter((item) => item !== family))} />{name}</label>)}</div>
       <label className="field-label">Maximum requested duration (seconds)<input type="number" min={1} max={3600} required value={duration} onChange={(event) => setDuration(event.target.value)} /></label>
-      <details className="response-registration"><summary>Automatic policy rules to evaluate in simulation</summary>
-        <p>Match a specific detector, high/critical severity, allowed group, and allowed family. These rules do not enable live execution.</p>
+      <details className="response-registration"><summary>Authorization limits</summary>{[["max_active", "Maximum active devices", 100], ["max_per_hour", "Maximum authorizations per hour", 100], ["max_evidence_age_seconds", "Maximum evidence age (seconds)", 3600], ["approval_ttl_seconds", "Approval window (seconds)", 900]].map(([key, label, max]) => <label className="field-label" key={key}>{label}<input type="number" required min={1} max={max} value={limits[key]} onChange={(event) => setLimits((current) => ({ ...current, [key]: event.target.value }))} /></label>)}</details>
+      <details className="response-registration"><summary>Automatic policy rules</summary>
+        <p>Match a specific detector, high/critical severity, allowed group, and allowed family. Simulate these rules before choosing bounded automatic policy.</p>
         {rules.map((rule, index) => <div className="response-rule" key={index}>
           {[["detector_id", "Detector ID"], ["group", "Allowed device group"]].map(([key, label]) => <label className="field-label" key={key}>{label}<input required maxLength={128} value={rule[key]} onChange={(event) => setRules((current) => current.map((item, position) => position === index ? { ...item, [key]: event.target.value } : item))} /></label>)}
           <label className="field-label">Severity<select value={rule.severity} onChange={(event) => setRules((current) => current.map((item, position) => position === index ? { ...item, severity: event.target.value } : item))}><option value="high">High</option><option value="critical">Critical</option></select></label>
@@ -217,7 +231,7 @@ function PolicyForm({ policy, canManage, onSave, busy }) {
         <button className="outline-button" type="button" disabled={rules.length >= 50} onClick={() => setRules((current) => [...current, { detector_id: "", severity: "high", group: "", family: "firewall" }])}>Add simulation rule</button>
       </details>
       {policy.emergency_stop ? <label className="response-check"><input type="checkbox" checked={resume} onChange={(event) => setResume(event.target.checked)} />Clear emergency stop when saving this policy</label> : null}
-      <p>Live modes require a separately configured and validated integration. This editor supports Off and Simulate.</p>
+      <p>Live modes require an explicitly enabled integration and a current worker heartbeat. Automatic actions must match an exact local policy rule.</p>
       <button className="primary-button" type="submit">Save response policy</button>
     </fieldset>
   </form>;
@@ -251,34 +265,32 @@ function ProposalForm({ assets, alerts, enabled, policy, onPropose }) {
 
 function AssetForm({ enabled, assets, onRegister }) {
   const [family, setFamily] = useState("firewall");
-  const [localError, setLocalError] = useState("");
-  return <form onSubmit={async (event) => {
+  const [editing, setEditing] = useState("");
+  const existing = assets.find((asset) => asset.asset_id === editing);
+  const localTime = (value) => { if (!value) return ""; const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 19); };
+  return <><label className="field-label">Assignment to register or update<select disabled={!enabled} value={editing} onChange={(event) => setEditing(event.target.value)}><option value="">New asset</option>{assets.map((asset) => <option key={asset.asset_id} value={asset.asset_id}>{asset.asset_id} · revision {asset.revision}</option>)}</select></label>
+  <form key={`${editing}:${existing?.revision || 0}`} onSubmit={async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const data = Object.fromEntries(new FormData(form));
-    if (assets.some((asset) => asset.asset_id === data.asset_id)) {
-      setLocalError("This asset already exists. Use the scoped API to review and update its complete assignment.");
-      return;
-    }
-    setLocalError("");
     const result = await onRegister({ asset_id: data.asset_id, group: data.group, platform: data.platform,
+      revision: existing?.revision || 0,
       critical: data.critical === "on", source: data.source,
       addresses: data.addresses.split(",").map((value) => value.trim()).filter(Boolean),
       observed_at: new Date(data.observed_at).toISOString(), valid_until: new Date(data.valid_until).toISOString(),
-      bindings: { [family]: { integration_id: data.integration_id, target_id: data.target_id } } });
-    if (result) form.reset();
+      bindings: { ...existing?.bindings, [family]: { integration_id: data.integration_id, target_id: data.target_id } } });
+    if (result && !existing) form.reset();
   }}><fieldset disabled={!enabled}><legend className="response-sr-only">Authoritative asset assignment</legend>
-    <div className="response-form-grid">{[["asset_id", "Stable asset ID"], ["group", "Device group"], ["platform", "Operating system / platform"], ["source", "Mapping source"], ["addresses", "Assigned addresses (comma-separated)"], ["integration_id", "Integration ID"], ["target_id", "Provider device ID"]].map(([name, label]) => <label className="field-label" key={name}>{label}<input name={name} required maxLength={name === "addresses" ? 800 : 128} /></label>)}
+    <div className="response-form-grid">{[["asset_id", "Stable asset ID"], ["group", "Device group"], ["platform", "Operating system / platform"], ["source", "Mapping source"], ["addresses", "Assigned addresses (comma-separated)"], ["integration_id", "Integration ID"], ["target_id", "Provider device ID"]].map(([name, label]) => <label className="field-label" key={name}>{label}<input key={name + (name.endsWith("_id") && name !== "asset_id" ? family : "")} name={name} required readOnly={name === "asset_id" && Boolean(existing)} defaultValue={name === "addresses" ? existing?.addresses.join(", ") || "" : ["integration_id", "target_id"].includes(name) ? existing?.bindings[family]?.[name] || "" : existing?.[name] || ""} maxLength={name === "addresses" ? 800 : 128} /></label>)}
       <label className="field-label">Response family<select value={family} onChange={(event) => setFamily(event.target.value)}>{Object.entries(FAMILY_NAMES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-      <label className="field-label">Assignment observed at (local time)<input type="datetime-local" name="observed_at" required step={1} /></label>
-      <label className="field-label">Assignment valid until (local time)<input type="datetime-local" name="valid_until" required step={1} /></label>
+      <label className="field-label">Assignment observed at (local time)<input type="datetime-local" name="observed_at" required step={1} defaultValue={localTime(existing?.observed_at)} /></label>
+      <label className="field-label">Assignment valid until (local time)<input type="datetime-local" name="valid_until" required step={1} defaultValue={localTime(existing?.valid_until)} /></label>
     </div>
-    <label className="response-check"><input type="checkbox" name="critical" defaultChecked />Critical asset · excluded from response</label>
+    <label className="response-check"><input type="checkbox" name="critical" defaultChecked={existing ? existing.critical : true} />Critical asset · excluded from response</label>
     <label className="response-check"><input type="checkbox" required />I have verified this device identity and address assignment from the stated source.</label>
-    {localError ? <p role="alert">{localError}</p> : null}
     <p>Use the actual observation time. Assignments must cover evidence time and expire within 24 hours.</p>
-    <button className="primary-button" type="submit">Register assignment</button>
-  </fieldset></form>;
+    <button className="primary-button" type="submit">{existing ? "Update assignment and family binding" : "Register assignment"}</button>
+  </fieldset></form></>;
 }
 
 function ActionDetails({ action, capabilities, can, liveReady, onTransition }) {
@@ -293,7 +305,7 @@ function ActionDetails({ action, capabilities, can, liveReady, onTransition }) {
     <dl className="detail-list"><div><dt>Integration / device</dt><dd>{proposal.binding.integration_id} / {proposal.binding.target_id}</dd></div><div><dt>Platform / recovery</dt><dd>{proposal.platform} / {proposal.recovery.replaceAll("_", " ")}</dd></div><div><dt>Alert</dt><dd>{proposal.alert_id}</dd></div><div><dt>Authorization</dt><dd>{action.authorization ? `${action.authorization.type} / ${action.authorization.actor_id}` : "Not authorized"}</dd></div><div><dt>Release operation</dt><dd>{action.release_provider_action_id || "Not recorded"}</dd></div></dl>
     <p className="response-hash">Proposal hash: {action.proposal_hash}</p>
     <details><summary>Inspect complete proposal</summary><pre className="response-proposal-json">{JSON.stringify(proposal, null, 2)}</pre></details>
-    {action.status === "simulated" ? <p>No enforcement performed. Automatic policy match: {action.simulation.would_authorize_automatically ? "yes" : "no"}; human approval would otherwise be required.</p> : null}
+    {action.status === "simulated" ? <p>No enforcement performed. Automatic authorization eligible: {action.simulation.would_authorize_automatically ? "yes" : "no"}; human approval would otherwise be required. Detector provenance: {action.simulation.detector_origin_verified ? "verified" : "not verified / legacy alert"}.</p> : null}
     {sameActor && action.status === "awaiting_approval" ? <p>A different authorized person must approve this proposal.</p> : null}
     <div className="response-buttons"><button className="primary-button" disabled={!canApprove} onClick={() => onTransition("approve")}>Approve exact proposal</button><button className="outline-button" disabled={!canCancel} onClick={() => onTransition("cancel")}>Cancel unstarted action</button><button className="outline-button" disabled={!canRelease} onClick={() => onTransition("release")}>Request verified release</button></div>
   </article>;

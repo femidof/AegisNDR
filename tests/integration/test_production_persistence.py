@@ -185,8 +185,28 @@ class PostgresDetectionTransactionTests(unittest.TestCase):
                 counts = [connection.execute(
                     f"SELECT count(*) FROM local_state.{table} WHERE tenant_id=%s AND deployment_id=%s",
                     (tenant, deployment),
-                ).fetchone()[0] for table in ("alerts", "detection_alert_keys", "alert_evidence")]
-            self.assertEqual(counts, [1, 1, 1])
+                ).fetchone()[0] for table in ("alerts", "detection_alert_keys", "alert_evidence", "response_records")]
+            self.assertEqual(counts, [1, 1, 1, 1])
+            from hybrid_ndr_storage.response import ResponseRepository
+            import hashlib
+            from hybrid_ndr_contracts import canonical_json
+            repository = ResponseRepository(adapter)
+            winner = results[0][1]
+            with repository.transaction(tenant, deployment) as tx:
+                origin = tx.get("detector_origin", winner["alert_id"])
+            projection = {key: winner[key] for key in ("detector_id", "severity", "entity_type", "entity_id",
+                          "evidence_ids", "created_at", "features", "baseline")}
+            self.assertEqual(origin["sha256"], hashlib.sha256(canonical_json(projection).encode()).hexdigest())
+
+            # The same scope lock protects capacity checks and worker claims.
+            def increment(_index):
+                with repository.transaction(tenant, deployment) as tx:
+                    record = tx.get("test", "counter", {"count": 0})
+                    tx.put("test", "counter", {"count": record["count"] + 1})
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(increment, range(20)))
+            with repository.transaction(tenant, deployment) as tx:
+                self.assertEqual(tx.get("test", "counter")["count"], 20)
             # Integrity still applies at commit: a claim without its parent fails.
             with self.assertRaises(psycopg.errors.ForeignKeyViolation):
                 with adapter._transaction() as cursor:
@@ -197,7 +217,7 @@ class PostgresDetectionTransactionTests(unittest.TestCase):
                     )
         finally:
             with psycopg.connect(dsn) as connection:
-                for table in ("alert_evidence", "detection_alert_keys", "alerts"):
+                for table in ("response_records", "alert_evidence", "detection_alert_keys", "alerts"):
                     connection.execute(
                         f"DELETE FROM local_state.{table} WHERE tenant_id=%s AND deployment_id=%s",
                         (tenant, deployment),

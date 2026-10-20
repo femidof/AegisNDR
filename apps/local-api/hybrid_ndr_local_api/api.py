@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 
 from hybrid_ndr_agent import InvestigationRuntime
 from hybrid_ndr_agent.response import ResponseDenied, ResponseWorkflow
+from hybrid_ndr_agent.response_adapters import configured_workflow
 from hybrid_ndr_auth import (
     DEFAULT_ROLE_PERMISSIONS,
     AuthenticationError,
@@ -132,9 +133,13 @@ class LocalAPI:
     ) -> None:
         self.store = store
         self.runtime = runtime
-        # Live adapters are deliberately not installed by the default API startup.
-        # Privileged integration configuration requires an explicit lab rollout.
-        self.response = ResponseWorkflow(store)
+        try:
+            self.response = configured_workflow(store)
+        except (ValueError, OSError, KeyError, TypeError):
+            # An optional response misconfiguration must not stop local detection
+            # and investigation. Privileged response remains unavailable.
+            self.response = ResponseWorkflow(store)
+            self.response.configuration_error = True
         self.authenticator = authenticator or build_authenticator(role_permissions=ROLE_PERMISSIONS)
         self.persistence = persistence
         self._standalone = standalone_settings()
@@ -812,7 +817,7 @@ class LocalAPI:
             if path == "/api/v1/response/policy":
                 return APIResponse(200, self.response.policy(*scope))
             if path == "/api/v1/response/capabilities":
-                return APIResponse(200, {**self.response.capabilities(),
+                return APIResponse(200, {**self.response.capabilities(*scope),
                     "actor_id": auth.actor_id, "permissions": sorted(auth.permissions)})
             for resource, kind in (("assets", "asset"), ("actions", "action"), ("journal", "journal")):
                 if path == "/api/v1/response/" + resource:

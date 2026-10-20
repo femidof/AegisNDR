@@ -16,6 +16,7 @@ A runnable MVP of a customer-resident Network Detection and Response platform wi
 - Vendor cloud console with Logto organization authentication, customer and deployment enrollment, fleet health/version/sensor status, aggregate usage, entitlements, policy, updates, and support metadata—without customer event or evidence access.
 - Single-node Docker Compose topology for the application plus Suricata, Zeek, Vector, ClickHouse, PostgreSQL, MinIO, Logto, Grafana, and Prometheus.
 - Deterministic demo fixtures and automated unit, integration, security, and tenant-isolation tests.
+- Opt-in response workflow with simulation, independent approval, bounded automatic policy, a supervised worker, Linux nftables gateway/endpoint enforcement, and a scoped Defender adapter with independent probe verification.
 
 ## System design
 
@@ -150,19 +151,21 @@ service has its own provider routing and privacy checks.
   container solely because its health check reports `unhealthy`. Volume backups,
   restore procedures, and host capacity remain operational responsibilities.
 
-### Blocking and endpoint isolation roadmap
+### Blocking and endpoint isolation
 
-**Simulation foundation; live enforcement is not enabled.** The Local API now
-includes scoped asset registration, response policy, evidence-bound proposals,
-simulation results, and a separate response journal. Approval and worker library
-components prepare the next integration stage. The Response dashboard includes
-policy and asset setup, simulation of recent alerts, proposal review, and guarded
-approval/cancellation/release controls. Concrete enforcement adapters and worker
-deployment remain to be implemented. See the
-[response workflow and API](docs/architecture/response-workflow.md).
+**Implemented and opt-in; response defaults to off.** The Local API and Response
+dashboard provide scoped asset registration, simulation, independent approval,
+bounded automatic policy, exact proposal review, recovery controls and a separate
+response journal. A supervised worker can create policy-matched proposals from
+current detections and execute configured adapters. Concrete support covers Linux
+nftables gateways, native Linux endpoint isolation, and Defender isolation for
+Windows 10/11 with a separately preserved verification channel. Other products
+and native endpoint operating systems are not implied. See the
+[response workflow and API](docs/architecture/response-workflow.md) and
+[deployment and recovery guide](docs/deployment/response-enforcement.md).
 
 Firewall blocking,
-EDR isolation, and future endpoint agents should share a customer-local response
+EDR isolation, and endpoint agents share a customer-local response
 workflow, with enforcement performed by the relevant integration:
 
 ```mermaid
@@ -181,11 +184,11 @@ flowchart LR
     Verify --> Recovery["Timed release / rollback + audit"]
 ```
 
-The response design should default to simulation, then introduce approved actions
-before narrowly scoped autonomy. It needs stable device identity, tenant-scoped
+Start with simulation, then introduce approved actions before narrowly scoped
+autonomy. The response path enforces stable device bindings, tenant-scoped
 authorization, critical-asset exclusions, action limits, an emergency stop,
-idempotent execution, and reconciliation of uncertain outcomes. Model output
-alone must not authorize enforcement. A passive network sensor requires an
+idempotent native commands, and reconciliation of uncertain outcomes. Model output
+does not authorize enforcement. A passive network sensor requires an
 enforcement integration to block traffic or isolate a device.
 
 For additional context, see the [architecture notes](docs/architecture/architecture.md),
@@ -281,9 +284,11 @@ docs/                  Architecture, threat model, API, and demo guidance
 
 ## Security boundary
 
-Raw events, packet captures, internal identifiers, alert evidence, cases, analyst notes, credentials, and audit records remain in the customer environment. Only a policy-approved minimized evidence package can cross the outbound model boundary. The gateway stores usage metadata—not prompts, responses, or evidence—and fails closed when zero-retention or regional policy cannot be verified.
+Raw events, packet captures, alert evidence, cases, analyst notes, and audit records remain in the customer environment. Only a policy-approved minimized evidence package can cross the outbound model boundary. The gateway stores usage metadata—not prompts, responses, or evidence—and fails closed when zero-retention or regional policy cannot be verified. Optional response integrations use a separate worker boundary: configured enforcement services receive exact target/action metadata, and Defender receives provider device IDs and correlated action comments. Provider credentials stay in customer-local secret files and are used only with configured authenticated TLS destinations.
 
-This MVP does not perform autonomous blocking or endpoint isolation.
+Blocking and endpoint isolation require explicit response configuration, valid
+credentials, an enabled worker and local policy. They are disabled in the base
+deployment. Live acceptance and enablement are separate from source delivery.
 
 ## Customer appliance installation
 

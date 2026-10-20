@@ -27,6 +27,10 @@ class ResponseDenied(ValueError):
     pass
 
 
+class ResponseNotSubmitted(ResponseDenied):
+    """A preflight rejected the action before any mutation request was sent."""
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -60,12 +64,15 @@ def integer(value, minimum, maximum):
 
 
 class ResponseWorkflow:
-    def __init__(self, store, *, adapters=None, execution_enabled=False):
+    def __init__(self, store, *, adapters=None, execution_enabled=False, scope=None):
         self.store = store
         self.repository = ResponseRepository(store)
+        self.repository.scope = scope
         # Adapters are supplied by trusted local configuration, never request bodies.
         self.adapters = adapters or {}
         self.execution_enabled = execution_enabled
+        self.configuration_revision = None
+        self.configuration_error = False
 
     def list(self, tenant, deployment, kind, *, limit=100, offset=0):
         if kind not in {"asset", "action", "journal"}:
@@ -81,9 +88,19 @@ class ResponseWorkflow:
         with self.repository.transaction(tenant, deployment) as tx:
             return tx.get("policy", "current", dict(DEFAULT_POLICY))
 
-    def capabilities(self):
+    def capabilities(self, tenant=None, deployment=None):
+        worker = {"healthy": False, "updated_at": None}
+        if tenant and deployment:
+            with self.repository.transaction(tenant, deployment) as tx:
+                worker = tx.get("worker", "current", worker)
+            worker["healthy"] = bool(worker.get("updated_at") and
+                0 <= (now() - timestamp(worker["updated_at"])).total_seconds() < 30 and worker.get("healthy")
+                and worker.get("configuration_revision") == self.configuration_revision)
         return {
             "execution_enabled": self.execution_enabled,
+            "worker": worker,
+            "configuration_error": self.configuration_error,
+            "automatic_proposals": getattr(self, "automatic_proposals", False),
             "families": [{"family": family, "action": action,
                           "simulation": True,
                           "integrations": sorted(key for key, adapter in self.adapters.items()
@@ -138,7 +155,7 @@ class ResponseWorkflow:
 
     def register_asset(self, tenant, deployment, actor, body):
         fields(body, {"asset_id", "group", "critical", "platform", "addresses", "observed_at",
-                      "valid_until", "source", "bindings"})
+                      "valid_until", "source", "bindings", "revision"})
         asset = {key: body[key] for key in ("asset_id", "group", "critical", "platform", "addresses",
                                            "observed_at", "valid_until", "source", "bindings")}
         for key in ("asset_id", "group", "platform", "source"):
@@ -166,7 +183,10 @@ class ResponseWorkflow:
                 if (other["asset_id"] != asset["asset_id"] and timestamp(other["valid_until"]) > now()
                         and set(other["addresses"]) & set(asset["addresses"])):
                     raise ResponseDenied("address already belongs to another current asset; resolve ambiguity")
-            asset["revision"] = tx.get("asset", asset["asset_id"], {"revision": 0})["revision"] + 1
+            previous_revision = tx.get("asset", asset["asset_id"], {"revision": 0})["revision"]
+            if type(body.get("revision", 0)) is not int or body.get("revision", 0) != previous_revision:
+                raise ResponseDenied("asset revision changed; reload the complete assignment before updating")
+            asset["revision"] = previous_revision + 1
             tx.put("asset", asset["asset_id"], asset)
             tx.journal(actor, "response.asset.registered", asset["asset_id"], {"asset_hash": digest(asset)})
             return asset
@@ -222,12 +242,11 @@ class ResponseWorkflow:
         if len(active) >= policy["max_active"]:
             raise ResponseDenied("maximum active response actions reached")
         # Only authorizations in the last hour count, including released/failed actions.
-        history = tx.list("journal", limit=1001)
+        history = tx.list("authorization", limit=1001)
         recent = [record for record in history if now() - timestamp(record["created_at"]) < timedelta(hours=1)]
         if len(history) == 1001 and len(recent) == 1001:
-            raise ResponseDenied("response journal exceeds the bounded rate-check window")
-        if sum(record["event"] == "response.authorized" and
-               (action is None or record["resource_id"] != action["action_id"])
+            raise ResponseDenied("authorization history exceeds the bounded rate-check window")
+        if sum((action is None or record["action_id"] != action["action_id"])
                for record in recent) >= policy["max_per_hour"]:
             raise ResponseDenied("hourly response authorization limit reached")
 
@@ -271,7 +290,7 @@ class ResponseWorkflow:
                        {"action_count": len(actions), "exclusion_count": len(excluded), "enforcement_performed": False})
         return {"items": actions, "count": len(actions), "excluded": excluded, "enforcement_performed": False}
 
-    def propose(self, tenant, deployment, actor, body, *, simulation_only=False):
+    def propose(self, tenant, deployment, actor, body, *, simulation_only=False, automatic_only=False):
         fields(body, {"request_id", "asset_id", "alert_id", "family", "address", "duration_seconds"})
         request_id = identifier(body["request_id"])
         family = body["family"]
@@ -292,6 +311,10 @@ class ResponseWorkflow:
                     raise ResponseDenied("simulation request ID belongs to a non-simulation action")
                 return existing
             policy = tx.get("policy", "current", dict(DEFAULT_POLICY))
+            if automatic_only and policy["mode"] != "autonomous":
+                raise ResponseDenied("automatic proposals require autonomous policy")
+            if len(tx.list("action", states=("awaiting_approval",), limit=1001)) >= 1000:
+                raise ResponseDenied("pending response approval capacity reached")
             if simulation_only and policy["mode"] != "simulate":
                 raise ResponseDenied("policy changed; batch simulation cannot create live proposals")
             asset = tx.get("asset", asset_id)
@@ -312,8 +335,14 @@ class ResponseWorkflow:
                 "authorization_expires_at": (now() + timedelta(seconds=policy["approval_ttl_seconds"])).isoformat(),
                 "recovery": "enforcement_ttl" if family == "firewall" else "explicit_verified_release",
             }
-            automatic = {"detector_id": alert["detector_id"], "severity": alert["severity"],
-                         "group": asset["group"], "family": family} in policy["autonomous_rules"]
+            rule_match = {"detector_id": alert["detector_id"], "severity": alert["severity"],
+                          "group": asset["group"], "family": family} in policy["autonomous_rules"]
+            origin = tx.get("detector_origin", alert_id, {"unverified": True})
+            origin_verified = origin.get("sha256") == digest({key: alert.get(key) for key in ("detector_id", "severity", "entity_type",
+                               "entity_id", "evidence_ids", "created_at", "features", "baseline")})
+            automatic = rule_match and origin_verified
+            if automatic_only and not automatic:
+                raise ResponseDenied("alert does not match an automatic policy rule")
             action = {"action_id": action_id, "proposal": proposal, "proposal_hash": digest(proposal),
                       "proposed_by": actor, "status": "awaiting_approval", "attempts": 0,
                       "created_at": proposal["created_at"], "authorization": None,
@@ -321,6 +350,8 @@ class ResponseWorkflow:
             self._capacity(tx, policy, action)
             if policy["mode"] == "simulate":
                 action.update(status="simulated", simulation={"would_authorize_automatically": automatic,
+                                                             "automatic_rule_match": rule_match,
+                                                             "detector_origin_verified": origin_verified,
                                                              "would_require_approval": not automatic,
                                                              "enforcement_performed": False})
             elif policy["mode"] == "autonomous" and automatic:
@@ -342,6 +373,12 @@ class ResponseWorkflow:
     def _authorize(self, tx, action, actor, authorization_type):
         if not self.execution_enabled:
             raise ResponseDenied("live execution is disabled")
+        if self.configuration_revision is not None:
+            worker = tx.get("worker", "current", {"healthy": False})
+            if (not worker.get("healthy") or worker.get("configuration_revision") != self.configuration_revision
+                    or not worker.get("updated_at")
+                    or not 0 <= (now() - timestamp(worker["updated_at"])).total_seconds() < 30):
+                raise ResponseDenied("a healthy worker with matching configuration is required")
         proposal = action["proposal"]
         adapter = self.adapters.get(proposal["binding"]["integration_id"])
         if adapter is None or adapter.family != proposal["family"]:
@@ -353,6 +390,34 @@ class ResponseWorkflow:
         action.update(status="queued", authorization={"actor_id": actor, "type": authorization_type,
                       "proposal_hash": action["proposal_hash"], "created_at": now().isoformat()})
         tx.journal(actor, "response.authorized", action["action_id"], action["authorization"])
+        tx.put("authorization", action["action_id"], {"action_id": action["action_id"],
+            "created_at": action["authorization"]["created_at"]})
+
+    def schedule(self, tenant, deployment):
+        policy = self.policy(tenant, deployment)
+        if not self.execution_enabled or policy["mode"] != "autonomous" or policy["emergency_stop"]:
+            return {"considered": 0, "excluded": 0}
+        with self.repository.transaction(tenant, deployment) as tx:
+            assets = tx.list("asset", limit=1001)
+        if len(assets) > 1000:
+            raise ResponseDenied("asset inventory exceeds supported capacity")
+        stats = {"considered": 0, "excluded": 0}
+        for alert in self.store.list_alerts(tenant, deployment_id=deployment, limit=50):
+            matches = [(asset, address) for asset in assets for address in asset["addresses"]
+                if alert["entity_id"] == address or (alert["entity_id"] == asset["asset_id"] and len(asset["addresses"]) == 1)]
+            if len(matches) != 1:
+                continue
+            asset, address = matches[0]
+            for family in sorted(set(policy["allowed_families"]) & set(asset["bindings"])):
+                stats["considered"] += 1
+                try:
+                    self.propose(tenant, deployment, "response-policy", {
+                        "request_id": digest(["automatic", alert["alert_id"], asset["asset_id"], family]),
+                        "asset_id": asset["asset_id"], "alert_id": alert["alert_id"], "family": family,
+                        "address": address, "duration_seconds": min(300, policy["max_duration_seconds"])}, automatic_only=True)
+                except (ResponseDenied, ValueError, LookupError):
+                    stats["excluded"] += 1
+        return stats
 
     def _revalidate(self, tx, action, alert, events):
         proposal = action["proposal"]

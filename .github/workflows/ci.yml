@@ -67,6 +67,16 @@ jobs:
           python3 -m unittest discover -s tests/backend -p 'test_*.py'
           python3 -m unittest discover -s tests/integration -p 'test_*.py'
 
+  response-enforcement:
+    name: Isolated Linux response acceptance
+    runs-on: ubuntu-24.04
+    needs: backend
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify enforcement, recovery and kernel expiration
+        run: bash scripts/test-response-enforcement.sh
+
   survivable-ops:
     name: Offline resilience container acceptance
     runs-on: ubuntu-24.04

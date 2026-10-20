@@ -154,15 +154,22 @@ class JSONHTTPClient:
             headers=request_headers,
             method=method.upper(),
         )
+        response = None
         try:
             response = self._opener.open(request, timeout=self.timeout_seconds)
             raw = self._bounded_read(response, self.maximum_response_bytes + 1, self.timeout_seconds)
         except HTTPError as exc:
             # Never read or propagate an upstream error body: it can contain
             # reflected evidence, provider internals, or credentials.
+            exc.close()
             raise OutboundHTTPError("http_error", status=int(exc.code)) from None
         except (URLError, TimeoutError, OSError, http.client.HTTPException):
             raise OutboundHTTPError("transport_unavailable") from None
+        finally:
+            if response is not None:
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
         if len(raw) > self.maximum_response_bytes:
             raise OutboundHTTPError("response_too_large")
         try:

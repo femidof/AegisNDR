@@ -2,7 +2,7 @@
 
 ## Delivery status
 
-This change implements the **shared backend foundation** for firewall blocking,
+This change implements the customer-local response workflow for firewall blocking,
 EDR isolation, and endpoint-agent isolation. The default Local API supports policy,
 asset registration, evidence-bound proposals, simulation, action inspection, and
 an emergency stop. It starts with response **off** and live execution disabled.
@@ -12,11 +12,12 @@ recent-alert simulation, proposal review, permission-based action controls, and
 the separate response journal. Its preview mode is read-only and explicitly
 displays that no response is performed. Read failures disable mutation controls.
 
-The approval lifecycle and leased worker are library components for the next lab
-integration stage. No firewall/EDR/agent adapter, privileged worker service, or
-live configuration switch is installed by this change. Setting an API policy to
-a live mode is rejected by default. This is not
-a claim that all three families can already enforce containment.
+Concrete adapters support Linux nftables gateway blocking, native Linux endpoint
+isolation, and scoped Defender isolation for Windows 10/11 with an independent
+probe service. A supervised worker, opt-in Compose overlay, native service unit,
+typed mTLS commands and explicit local enablement configuration are included.
+The base deployment remains off. See the [deployment and recovery guide](../deployment/response-enforcement.md)
+for supported configurations and required lab acceptance.
 
 ## Flow and boundaries
 
@@ -37,8 +38,8 @@ flowchart TD
     Verification -.-> Recovery["Verify release / firewall TTL expiry"]
 ```
 
-Solid arrows show the default API path. Dotted arrows require the lab adapter and
-worker integration. The response runtime does not call the model, take a model
+Solid arrows show the default API path. Dotted arrows require explicit response
+configuration and worker deployment. The response runtime does not call the model, take a model
 confidence as permission, execute a shell, or accept a provider URL or credential
 from a request.
 
@@ -53,16 +54,26 @@ undo existing restrictions or revoke an operation already submitted externally.
 Automatic authorization requires an exact match of detector ID, severity
 (`high` or `critical`), device group, and response family against an explicit
 local rule. Assessment text and model confidence are not inputs to this decision.
+New detector alerts also carry an immutable provenance hash in the same
+PostgreSQL transaction as their creation. Automatic authorization requires that
+hash to match the alert's detector, original severity, entity and evidence
+metadata. Analyst severity edits cannot elevate an alert into automatic response.
+Legacy/manual/demo alerts without detector provenance remain approval-only.
 Automatic authorization is implemented for a submitted proposal. A manual batch
 can simulate up to 50 recent alerts (20 by default) against registered assets and
 permitted bindings, reporting excluded alerts separately. Batch proposals are
 forced to simulation inside the authorization transaction; a concurrent switch
-to a live mode cannot turn a batch simulation into enforcement. Automatic
-creation of proposals from the detection loop is a later integration step.
+to a live mode cannot turn a batch simulation into enforcement. With the separate
+`automatic_proposals` configuration enabled, the supervised worker scans up to 50
+recent locally generated alerts and creates proposals only for exact policy
+matches. Each alert/asset/family combination is deduplicated, including after
+release; it is not repeatedly isolated from the same alert.
 
 An administrator registers a stable asset ID, group, platform, critical flag,
 mapping source, current addresses, assignment start/end, and provider bindings.
 A binding contains an `integration_id` and a stable provider `target_id`.
+Updating an existing assignment requires its current integer `revision`; the
+dashboard can update one family binding while preserving the other bindings.
 Assignments must cover both evidence time and current time, last at most 24
 hours, and not overlap another current asset's addresses. The registry is an
 administrator-attested mapping, not an implemented DHCP/EDR inventory discovery
@@ -161,7 +172,9 @@ succeeded / unknown -> release_queued -> releasing -> release_verifying -> relea
                                                   \-> release_unknown
 ```
 
-Unstarted actions can become `cancelled` or `invalidated`. A 60-second worker
+Unstarted actions can become `cancelled`, `invalidated`, or `expired`. A rejected
+preflight becomes `failed` / `not_submitted`; uncertain mutation replies remain
+unknown. A 60-second worker
 lease and unique token prevent another worker from submitting the same queue
 item concurrently. An expired submission lease becomes `unknown`; the worker
 only reconciles it. A provider submission ID is recorded separately from
@@ -186,13 +199,13 @@ Endpoint isolation requires explicit verified release; its proposal duration
 does not imply automatic endpoint recovery. Unknown outcomes remain active for
 capacity limits and require observation or operator recovery.
 
-The initial implementation supports at most 1,000 asset assignments, 100 active
+The initial implementation supports at most 1,000 asset assignments, 1,000 pending approvals, 100 active
 actions, and a policy limit of 100 authorizations per hour. Bounded inventory and
 rate-check windows fail closed when exceeded. Response history has no automatic
 retention job yet. This is a single-node design with persistent storage, not a
 high-availability response controller.
 
-## Remaining integration and acceptance work
+## Integration scope and production acceptance
 
 ### Enforcement integration requirements
 
@@ -208,25 +221,25 @@ returns a machine action; its [action resource](https://learn.microsoft.com/en-u
 has pending, in-progress, and terminal states. Submission acceptance is not
 independent proof of effective isolation or ownership. Its documentation also
 warns about management connectivity for devices behind a full VPN tunnel. These
-are adapter acceptance requirements; this change does not install a Defender
-adapter or send any provider requests.
+are adapter acceptance requirements. The implemented Defender adapter combines
+correlated action history with fresh mTLS canary observations and requires an
+exclusive device group. Because Defender exposes aggregate isolation state,
+uncoordinated administrator races cannot be eliminated by this controller.
 
 ### Rollout sequence
 
-1. Select the lab firewall, EDR, and endpoint operating systems. Build concrete
-   `validate`, `submit`, `observe`, and `release` adapters; load credentials from
-   customer-local secret files and pin adapter configuration to approved proposals.
-2. Add capability checks for supported platforms, enforcement zone, management
-   connectivity, exclusions, provider ownership, and reliable rollback. Introduce
-   an explicit deployment configuration and supervised worker only after these
-   checks exist. The current library interface is not a production integration.
-3. Connect selected detectors to proposal generation without giving the model
-   execution authority. The dashboard controls now exist; validate their full
-   lifecycle with each concrete adapter before enabling live operation.
+1. Provision one of the supported enforcement/probe services and trusted TLS
+   identities using the deployment guide. Confirm stable IDs, routing, management
+   exceptions and the pinned configuration revision.
+2. Deploy the worker with credentials mounted separately from the API. Register
+   verified asset assignments, configure bounded policy, and begin in simulation.
+3. Validate the complete dashboard, worker, concrete adapter and recovery path
+   before enabling human-approved execution and then automatic proposal creation.
 4. Exercise tenant and role isolation, replay/staleness, real PostgreSQL races,
    worker crashes, lost submissions, provider throttling, IPv4/IPv6, and effective
    enforcement/release in a dedicated lab before enabling live modes.
 5. Roll out approved actions first, then narrowly bounded automatic firewall
    rules, then endpoint isolation for explicitly opted-in groups.
 
-No live containment or deployment changes are performed by this foundation.
+Source delivery does not enable response or perform live containment on an
+existing host. No lab acceptance is claimed by the implementation alone.

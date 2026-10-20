@@ -1,0 +1,67 @@
+# Opt-in customer response worker. Apply after the internal-TLS production overlay.
+# API receives only nonsecret configuration; provider keys/certificates are worker-only.
+services:
+  local-api:
+    environment:
+      RESPONSE_CONFIG_FILE: /etc/aegisndr/response.json
+    volumes:
+      - type: bind
+        source: ${RESPONSE_CONFIG_PATH:?Set RESPONSE_CONFIG_PATH to a reviewed controller JSON file}
+        target: /etc/aegisndr/response.json
+        read_only: true
+
+  response-worker:
+    profiles: [response]
+    build:
+      context: ../..
+      dockerfile: infra/compose/python.Dockerfile
+    command: [python3, services/response-worker/app.py]
+    environment:
+      TENANT_ID: ${TENANT_ID}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID}
+      RESPONSE_CONFIG_FILE: /etc/aegisndr/response.json
+      RESPONSE_HEALTH_FILE: /tmp/response-worker-health.json
+      PERSISTENCE_PROFILE: production
+      POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      POSTGRES_SCHEMA: local_state
+      CLICKHOUSE_URL: https://clickhouse:8443
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-hybrid_ndr}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      MINIO_ENDPOINT: https://minio:9000
+      MINIO_BUCKET: ${MINIO_CASE_BUCKET:-ndr-case-evidence}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      PERSISTENCE_CA_FILE: /run/internal-tls/ca-cert.pem
+    volumes:
+      - type: bind
+        source: ${RESPONSE_CONFIG_PATH:?Set RESPONSE_CONFIG_PATH}
+        target: /etc/aegisndr/response.json
+        read_only: true
+      - type: bind
+        source: ${RESPONSE_SECRETS_DIR:?Set RESPONSE_SECRETS_DIR to local worker credentials}
+        target: /run/response-secrets
+        read_only: true
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+    networks: [local-data, response-egress]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python3, -c, "import json,time; p='/tmp/response-worker-health.json'; d=json.load(open(p)); assert d['healthy'] and time.time()-__import__('os').stat(p).st_mtime < 30"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  response-egress: {}
