@@ -181,6 +181,12 @@ unverified rather than claiming containment succeeded. Verify this prerequisite
 before enabling an integration. Native endpoint isolation needs no external
 probe because its exact local enforcement rules are read back directly.
 
+If a probe becomes unreachable after a provider-confirmed, owned isolation,
+recovery remains available through the Defender API while ownership history is
+complete and contains no later foreign isolation intent. Release still remains
+unverified until a successful provider result and fresh probe agree. This avoids
+requiring the isolated device's probe channel merely to request its recovery.
+
 The adapter verifies machine ID, configured RBAC group, OS, current address,
 active health, noncritical provider classification and reachable canaries before
 submission. It correlates provider operations with action ID, proposal hash and

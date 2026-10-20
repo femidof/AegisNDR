@@ -180,6 +180,7 @@ class DefenderAdapter:
         return result["id"]
 
     def observe(self, action):
+        self.validate(action["proposal"])
         records = self._actions(action)
         owned = [record for record in records if self._owned(record, action)]
         if not owned:
@@ -196,16 +197,25 @@ class DefenderAdapter:
             return {"state": "pending", "owned": True}
         if latest.get("status") != "Succeeded":
             return {"state": "unknown", "owned": True}
-        reachable = self._probe(action)
+        try:
+            reachable = self._probe(action)
+        except Exception:
+            # Verified provider ownership still permits recovery when isolation
+            # cuts the probe path. It never proves effective containment/release.
+            return {"state": "unknown", "owned": True, "requires_release": not releases}
         state = "released" if releases and reachable else "applied" if not releases and not reachable else "unknown"
+        if state == "unknown" and not releases:
+            return {"state": state, "owned": True, "requires_release": True}
         return {"state": state, "owned": True}
 
     def release(self, action):
+        self.validate(action["proposal"])
         records = self._actions(action)
         releases = [record for record in records if self._owned(record, action, True)]
         if releases:
             return releases[0]["id"]
-        if self.observe(action) != {"state": "applied", "owned": True}:
+        observed = self.observe(action)
+        if not (observed.get("owned") is True and (observed.get("state") == "applied" or observed.get("requires_release") is True)):
             raise ResponseDenied("Defender restriction is not verified as exclusively owned")
         target = action["proposal"]["binding"]["target_id"]
         result = self._call("POST", "/api/machines/" + target + "/unisolate", {"Comment": self._marker(action, True)})

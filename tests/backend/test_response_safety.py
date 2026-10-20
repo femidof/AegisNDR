@@ -394,6 +394,26 @@ class AdapterSafetyTests(unittest.TestCase):
         with patch.object(self.adapter, "_actions", return_value=[self.original]), patch.object(self.adapter, "_probe", return_value=False):
             self.assertEqual(self.adapter.observe(self.action)["state"], "applied")
 
+    def test_unreachable_probe_cannot_prevent_owned_provider_recovery(self):
+        release = {**self.original, "type": "Unisolate", "id": "release-id",
+                   "requestorComment": self.adapter._marker(self.action, True)}
+        with patch.object(self.adapter, "_actions", return_value=[self.original]), \
+             patch.object(self.adapter, "_probe", side_effect=TimeoutError()), \
+             patch.object(self.adapter, "_call", return_value=release) as call:
+            observed = self.adapter.observe(self.action)
+            self.assertEqual(observed, {"state": "unknown", "owned": True, "requires_release": True})
+            self.assertEqual(self.adapter.release(self.action), "release-id")
+            self.assertTrue(call.call_args.args[1].endswith("/unisolate"))
+
+    def test_foreign_provider_history_still_blocks_recovery_without_probe(self):
+        foreign = {**self.original, "id": "foreign", "requestorComment": "foreign operator"}
+        with patch.object(self.adapter, "_actions", return_value=[foreign, self.original]), \
+             patch.object(self.adapter, "_probe", side_effect=TimeoutError()), \
+             patch.object(self.adapter, "_call") as call:
+            with self.assertRaises(ResponseDenied):
+                self.adapter.release(self.action)
+            call.assert_not_called()
+
     def test_pending_provider_operation_never_counts_as_applied(self):
         with patch.object(self.adapter, "_actions", return_value=[{**self.original, "status": "Pending"}]):
             self.assertEqual(self.adapter.observe(self.action)["state"], "pending")
