@@ -1,0 +1,29 @@
+[Unit]
+Description=AegisNDR typed response enforcer
+Wants=network-online.target
+After=network-online.target nftables.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aegisndr
+ExecStart=/usr/bin/python3 services/response-enforcer/app.py --config /etc/aegisndr-response/enforcer.json --database /var/lib/aegisndr-response/enforcer.sqlite3 --host 0.0.0.0 --port 9443 --certificate /etc/aegisndr-response/server-cert.pem --key /etc/aegisndr-response/server-key.pem --client-ca /etc/aegisndr-response/controller-ca.pem
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+UMask=0077
+StateDirectory=aegisndr-response
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

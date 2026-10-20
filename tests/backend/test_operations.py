@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 from datetime import datetime, timezone
 from pathlib import Path
 
 import support  # noqa: F401
 from hybrid_ndr_observability import Telemetry, sanitize_route, validate_collector_endpoint
-from hybrid_ndr_operations import ClickHouseOperations, OperationsAgent, OperationsConfig, render_prometheus
+from hybrid_ndr_operations import ClickHouseOperations, OperationsAgent, OperationsConfig, PostgresOperations, render_prometheus
 
 
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
@@ -23,6 +24,8 @@ EXPECTED_JOBS = {
 
 def operations_config(**overrides: object) -> OperationsConfig:
     values: dict[str, object] = {
+        "tenant_id": "tenant-a",
+        "deployment_id": "deployment-a",
         "postgres_url": "postgresql://ndr:secret@postgres:5432/hybrid_ndr",
         "clickhouse_url": "http://clickhouse:8123",
         "clickhouse_database": "hybrid_ndr",
@@ -278,12 +281,44 @@ class ClickHouseOperationsTests(unittest.TestCase):
             ClickHouseOperations("http://clickhouse:8123", "hybrid_ndr; DROP TABLE x", "ndr", "secret")
 
 
+class PostgresOperationsScopeTests(unittest.TestCase):
+    def test_metrics_bind_sensor_and_checkpoint_queries_to_installed_scope(self):
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchall.side_effect = [
+            [("zeek", "online", 1, 2.0, 3.0)], [("fast-10s", 5.0)]
+        ]
+        cursor.fetchone.side_effect = [(4096,), None]
+        connect = MagicMock(return_value=connection)
+        backend = PostgresOperations("postgresql://local", tenant_id="tenant-a", deployment_id="deployment-a", connect=connect)
+        result = backend.metrics(NOW)
+        self.assertEqual(result["detection_jobs"], {"fast-10s": 5.0})
+        self.assertEqual(result["sensors"][0]["sensor_type"], "zeek")
+        scoped = cursor.execute.call_args_list[:2]
+        for call in scoped:
+            self.assertIn("WHERE tenant_id = %s AND deployment_id = %s", call.args[0])
+            self.assertEqual(call.args[1], (NOW, "tenant-a", "deployment-a"))
+
+    def test_unscoped_monitoring_is_rejected(self):
+        for tenant, deployment in (("", "deployment-a"), ("tenant-a", " ")):
+            with self.assertRaises(ValueError):
+                PostgresOperations("postgresql://local", tenant_id=tenant, deployment_id=deployment, connect=MagicMock())
+
+
 class OperationsConfigurationTests(unittest.TestCase):
+    def test_environment_requires_installed_tenant_and_deployment(self):
+        environment = {"POSTGRES_URL": "postgresql://local", "CLICKHOUSE_USER": "ndr", "CLICKHOUSE_PASSWORD": "test"}
+        for values in ({}, {"TENANT_ID": "tenant-a"}, {"DEPLOYMENT_ID": "deployment-a"}):
+            with self.assertRaisesRegex(ValueError, "TENANT_ID and DEPLOYMENT_ID"):
+                OperationsConfig.from_env({**environment, **values})
+
     def test_configuration_bounds_retention_and_internal_origins(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             migration = Path(temporary) / "003.sql"
             migration.write_text("SELECT 1;\n", encoding="utf-8")
             environment = {
+                "TENANT_ID": "tenant-a",
+                "DEPLOYMENT_ID": "deployment-a",
                 "POSTGRES_URL": "postgresql://ndr:secret@postgres:5432/hybrid_ndr",
                 "CLICKHOUSE_USER": "ndr",
                 "CLICKHOUSE_PASSWORD": "secret",

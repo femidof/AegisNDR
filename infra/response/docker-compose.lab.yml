@@ -1,0 +1,67 @@
+# Entirely disposable networks and containers. Never use host networking here.
+services:
+  canary:
+    build:
+      context: ../..
+      dockerfile: infra/response/Dockerfile.lab
+    command: [python, tests/fixtures/response_lab_canary.py, client]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    networks:
+      management:
+        ipv4_address: 192.0.2.20
+      data:
+        ipv4_address: 198.18.0.20
+        ipv6_address: 2001:db8:198:18::20
+  far-canary:
+    build:
+      context: ../..
+      dockerfile: infra/response/Dockerfile.lab
+    command: [python, tests/fixtures/response_lab_canary.py, far]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    networks:
+      far:
+        ipv4_address: 198.19.0.20
+        ipv6_address: 2001:db8:198:19::20
+  acceptance:
+    build:
+      context: ../..
+      dockerfile: infra/response/Dockerfile.lab
+    command: [python, -m, unittest, discover, -s, tests/integration, -p, test_response_nftables.py, -v]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    environment:
+      AEGIS_NFT_LAB: "1"
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
+    networks:
+      management:
+        ipv4_address: 192.0.2.10
+      data:
+        ipv4_address: 198.18.0.10
+        ipv6_address: 2001:db8:198:18::10
+      far:
+        ipv4_address: 198.19.0.10
+        ipv6_address: 2001:db8:198:19::10
+networks:
+  management:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.0.2.0/24
+  data:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 198.18.0.0/24
+        - subnet: 2001:db8:198:18::/64
+  far:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 198.19.0.0/24
+        - subnet: 2001:db8:198:19::/64

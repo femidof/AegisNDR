@@ -12,7 +12,7 @@ import statistics
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
@@ -232,7 +232,8 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
     @contextmanager
     def _transaction(self) -> Iterator[Any]:
         psycopg = self._driver_loader("psycopg")
-        with psycopg.connect(self.dsn, connect_timeout=max(1, int(self.timeout_seconds))) as connection:
+        # The pinned driver's context can raise during commit before closing.
+        with closing(psycopg.connect(self.dsn, connect_timeout=max(1, int(self.timeout_seconds)))) as connection, connection:
             with connection.cursor() as cursor:
                 yield cursor
 
@@ -1062,6 +1063,19 @@ class PostgresMetadataAdapter(PostgresAdministrationMixin):
                     # The deterministic identifier already exists under another
                     # fingerprint (should not happen); treat as a duplicate.
                     created = False
+            if created:
+                # Preserve detector provenance separately from analyst-editable
+                # severity/status. Legacy alerts without this record require approval.
+                origin = {"sha256": hashlib.sha256(canonical_json({key: payload[key] for key in
+                          ("detector_id", "severity", "entity_type", "entity_id", "evidence_ids", "created_at",
+                           "features", "baseline")}).encode("utf-8")).hexdigest()}
+                cursor.execute(
+                    f"INSERT INTO {self._table('response_records')} "
+                    "(tenant_id,deployment_id,kind,record_id,state,updated_at,payload_json) "
+                    "VALUES (%s,%s,'detector_origin',%s,'',%s,%s) "
+                    "ON CONFLICT (tenant_id,deployment_id,kind,record_id) DO NOTHING",
+                    (tenant_id, deployment_id, alert_id, utc_now(), canonical_json(origin)),
+                )
             for item in items:
                 cursor.execute(
                     f"""INSERT INTO {self._table('alert_evidence')}

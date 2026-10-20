@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import test from "node:test";
 
@@ -64,7 +64,7 @@ test("portal frontend has no customer analyst API route and labels its metadata 
   assert.doesNotMatch(api, /\/api\/v1\/(alerts|events|investigations|cases|evidence)/);
   assert.match(api, /\/v1\/portal\/deployments/);
   assert.match(markup, /Aegis Cloud Console/);
-  assert.match(compose, /cloud-portal:\n\s+profiles: \[vendor\]/);
+  assert.match(compose, /^  cloud-portal:\r?\n(?: {4}[^\r\n]*\r?\n)*? {4}profiles: \[vendor\]/m);
   assert.match(compose, /127\.0\.0\.1:4180:4180/);
   assert.match(compose, /CONTROL_PORTAL_AUTH_AUDIENCE/);
   assert.match(dockerfile, /USER node/);
@@ -72,12 +72,22 @@ test("portal frontend has no customer analyst API route and labels its metadata 
 
 test("cloud portal server publishes hardened static/runtime endpoints and blocks machine APIs", async (context) => {
   const port = 43180;
+  // An accepting but silent upstream verifies the real request deadline,
+  // independently of the machine's DNS configuration.
+  let upstreamRequests = 0;
+  const silentUpstream = createServer(() => { upstreamRequests += 1; });
+  await new Promise((resolveListen) => silentUpstream.listen(0, "127.0.0.1", resolveListen));
+  context.after(() => {
+    silentUpstream.closeAllConnections();
+    silentUpstream.close();
+  });
   const child = spawn(process.execPath, [resolve("apps/cloud-portal/server.mjs")], {
     cwd: resolve("."),
     env: {
       ...process.env,
       PORT: String(port),
       CLOUD_PORTAL_ROOT: resolve("apps/cloud-portal"),
+      CONTROL_API_INTERNAL_URL: `http://127.0.0.1:${silentUpstream.address().port}`,
       LOGTO_PUBLIC_ENDPOINT: "https://identity.example",
       LOGTO_CLOUD_PORTAL_CLIENT_ID: "cloud-console",
       LOGTO_CLOUD_PORTAL_ORGANIZATION_ID: "org-a",
@@ -129,11 +139,14 @@ test("cloud portal server publishes hardened static/runtime endpoints and blocks
   // A prefix collision ("/api/v1/portalX") must not be treated as a portal route.
   const collision = await rawRequest("/api/v1/portalX");
   assert.equal(collision.status, 404);
-  // A genuine portal route is still proxied upstream (the control API is not
-  // running in this test, so the proxy reports the upstream as unavailable).
+  // A genuine portal route reaches the silent upstream, then fails within
+  // the request deadline rather than waiting indefinitely.
+  const proxyStarted = Date.now();
   const proxied = await rawRequest("/api/v1/portal/session");
   assert.equal(proxied.status, 502);
   assert.match(proxied.body, /control_plane_unavailable/);
+  assert.equal(upstreamRequests, 1, "portal route must reach the controlled upstream");
+  assert.ok(Date.now() - proxyStarted < 15_000, "proxy request must have a bounded lifetime");
 
   const page = await fetch(`http://127.0.0.1:${port}/deployments`);
   assert.equal(page.status, 200);

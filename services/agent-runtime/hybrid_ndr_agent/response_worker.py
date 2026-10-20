@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 
-from .response import ResponseDenied, digest, now, timestamp
+from .response import ResponseDenied, ResponseNotSubmitted, digest, now, timestamp
 
 
 WORK = ("queued", "executing", "verifying", "unknown", "release_queued", "releasing",
@@ -19,19 +19,24 @@ WORK = ("queued", "executing", "verifying", "unknown", "release_queued", "releas
 
 
 class ResponseWorker:
-    def __init__(self, workflow):
+    def __init__(self, workflow, *, on_progress=None):
         self.workflow = workflow
+        self.on_progress = on_progress or (lambda: None)
 
     def run_once(self, tenant, deployment):
-        if not self.workflow.execution_enabled:
-            return 0
         with self.workflow.repository.transaction(tenant, deployment) as tx:
-            actions = tx.list("action", states=WORK, limit=101)
+            for action in tx.list("action", states=("awaiting_approval",), limit=100, oldest=True):
+                if now() >= timestamp(action["proposal"]["authorization_expires_at"]):
+                    action["status"] = "expired"
+                    tx.put("action", action["action_id"], action)
+                    tx.journal("response-worker", "response.expired", action["action_id"], {})
+            actions = tx.list("action", states=WORK, limit=101, oldest=True)
         if len(actions) > 100:
             raise ResponseDenied("worker capacity exceeded; operator reconciliation required")
         processed = 0
         for action in actions:
             processed += self._process(tenant, deployment, action)
+            self.on_progress()
         return processed
 
     def _process(self, tenant, deployment, snapshot):
@@ -39,6 +44,9 @@ class ResponseWorker:
         adapter = self.workflow.adapters.get(proposal["binding"]["integration_id"])
         if adapter is None or adapter.family != proposal["family"]:
             # Retain uncertainty / restrictions until the original adapter returns.
+            return 0
+        if proposal.get("integration_revision") != self.workflow._adapter_revision(proposal["binding"]["integration_id"]):
+            # The original provider/configuration is needed for safe reconciliation too.
             return 0
         alert, events, validation_error = None, None, None
         if snapshot["status"] == "queued":
@@ -56,17 +64,21 @@ class ResponseWorker:
             if action["status"] in {"executing", "releasing"}:
                 # A crashed worker might have sent the command. Never submit it again.
                 action["status"] = "unknown" if action["status"] == "executing" else "release_unknown"
+                action.update(lease_token=None, lease_until=None)
                 tx.put("action", action_id, action)
                 tx.journal("response-worker", "response.outcome.unknown", action_id,
                            {"reason": "worker lease expired"})
                 return 1
             if action["status"] == "succeeded":
-                if proposal["family"] != "firewall" or now() < timestamp(action["restriction_expires_at"]):
+                due = proposal["family"] == "firewall" and now() >= timestamp(action["restriction_expires_at"])
+                if not due and action.get("observed_at") and (now() - timestamp(action["observed_at"])).total_seconds() < 20:
                     return 0
-                # Firewall TTL should expire at the enforcement point; verify expiry.
+                # Reconfirm continued protection as well as enforcement-side expiry.
                 operation = "observe"
             elif action["status"] == "queued":
                 try:
+                    if not self.workflow.execution_enabled:
+                        raise ResponseDenied("new enforcement is disabled")
                     if validation_error:
                         raise ResponseDenied(validation_error)
                     self.workflow._revalidate(tx, action, alert, events)
@@ -94,9 +106,21 @@ class ResponseWorker:
                        {"proposal_hash": action["proposal_hash"]})
 
         # Intent and lease are committed before any privileged remote operation.
-        result, error = None, False
+        result, error, not_submitted = None, False, False
         try:
-            result = getattr(adapter, operation)(action)
+            if operation == "release":
+                # Reconcile even a human-requested retry before mutating a provider.
+                # Never release an unrelated restriction or repeat a pending release.
+                observed = adapter.observe(action)
+                if isinstance(observed, dict) and observed.get("owned") is True and (
+                        observed.get("state") == "applied" or observed.get("requires_release") is True):
+                    result = adapter.release(action)
+                else:
+                    operation, result = "observe", observed
+            else:
+                result = getattr(adapter, operation)(action)
+        except ResponseNotSubmitted:
+            error, not_submitted = True, operation == "submit"
         except Exception:
             # Never persist provider exception text: it can contain tokens or evidence.
             error = True
@@ -106,18 +130,28 @@ class ResponseWorker:
                 return 1
             recovering = current["status"] in {"releasing", "release_verifying", "release_unknown"}
             if operation in {"submit", "release"}:
-                if error or not isinstance(result, str) or not result or len(result) > 256:
+                if not_submitted:
+                    current.update(status="failed", effective_state="not_submitted")
+                elif error or not isinstance(result, str) or not result or len(result) > 256:
                     current["status"] = "release_unknown" if recovering else "unknown"
                 else:
                     current["provider_action_id" if operation == "submit" else "release_provider_action_id"] = result
                     current["status"] = "release_verifying" if recovering else "verifying"
             else:
                 state = result.get("state") if isinstance(result, dict) and not error else "unknown"
+                current["observed_at"] = now().isoformat()
                 owned = isinstance(result, dict) and result.get("owned") is True
+                needs_release = isinstance(result, dict) and result.get("requires_release") is True
+                if state == "applied" and owned:
+                    current["ever_applied"] = True
                 expired = (proposal["family"] == "firewall"
                            and now() >= timestamp(current["restriction_expires_at"]))
-                if state in {"released", "absent"} and owned and (recovering or expired):
+                if state == "released" and owned and not needs_release:
                     current.update(status="released", effective_state="released")
+                elif state == "absent" and owned and not needs_release and (recovering or expired):
+                    current.update(status="released", effective_state="released")
+                elif state == "absent" and owned and not needs_release and not current.get("ever_applied") and (now() - timestamp(proposal["authorization_expires_at"])).total_seconds() >= 60:
+                    current.update(status="failed", effective_state="not_submitted")
                 elif state == "applied" and owned and not recovering and not expired:
                     current.update(status="succeeded", effective_state="applied")
                 elif state == "pending":

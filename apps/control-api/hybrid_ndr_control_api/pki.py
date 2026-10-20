@@ -218,6 +218,8 @@ class CertificateAuthority:
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=True)
             .add_extension(x509.SubjectAlternativeName(san), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(private_key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(self.private_key.public_key()), critical=False)
             .sign(self.private_key, hashes.SHA256())
         )
 

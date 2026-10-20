@@ -17,6 +17,20 @@ const DEFAULT_SCOPES = [
   "transmissions:read",
   "audit:read",
   "model-policy:manage",
+  "evidence:read",
+  "evidence:export",
+  "rules:read",
+  "rules:manage",
+  "integrations:read",
+  "integrations:manage",
+  "support:read",
+  "deployments:manage",
+  "response:read",
+  "response:propose",
+  "response:manage",
+  "response:approve",
+  "response:release",
+  "response:stop",
 ];
 
 function value(runtime, runtimeKey, environmentKey, fallback = "") {

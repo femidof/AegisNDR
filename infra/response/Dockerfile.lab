@@ -1,0 +1,11 @@
+FROM python:3.12-slim@sha256:646fb0bca3dd3ea1bcc6feb72c17ed16eed6e10cffc732fcc1478bd3e7f02d7b
+RUN apt-get update && apt-get install -y --no-install-recommends nftables iproute2 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY infra/compose/python-requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+COPY packages packages
+COPY services services
+COPY apps apps
+COPY tests tests
+COPY infra/response infra/response
+ENV PYTHONDONTWRITEBYTECODE=1 OTEL_SDK_DISABLED=true

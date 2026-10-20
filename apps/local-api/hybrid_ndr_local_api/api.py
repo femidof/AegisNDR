@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 
 from hybrid_ndr_agent import InvestigationRuntime
 from hybrid_ndr_agent.response import ResponseDenied, ResponseWorkflow
+from hybrid_ndr_agent.response_adapters import configured_workflow
 from hybrid_ndr_auth import (
     DEFAULT_ROLE_PERMISSIONS,
     AuthenticationError,
@@ -132,9 +133,13 @@ class LocalAPI:
     ) -> None:
         self.store = store
         self.runtime = runtime
-        # Live adapters are deliberately not installed by the default API startup.
-        # Privileged integration configuration requires an explicit lab rollout.
-        self.response = ResponseWorkflow(store)
+        try:
+            self.response = configured_workflow(store)
+        except (ValueError, OSError, KeyError, TypeError):
+            # An optional response misconfiguration must not stop local detection
+            # and investigation. Privileged response remains unavailable.
+            self.response = ResponseWorkflow(store)
+            self.response.configuration_error = True
         self.authenticator = authenticator or build_authenticator(role_permissions=ROLE_PERMISSIONS)
         self.persistence = persistence
         self._standalone = standalone_settings()
@@ -248,6 +253,9 @@ class LocalAPI:
     ) -> APIResponse:
         if path.startswith("/api/v1/response/"):
             return self._response_dispatch(method, path, auth, body, query)
+        if method == "GET" and path == "/api/v1/session":
+            return APIResponse(200, {"actor_id": auth.actor_id, "tenant_id": auth.tenant_id,
+                "deployment_id": auth.deployment_id, "role": auth.role, "permissions": sorted(auth.permissions)})
         if method == "POST" and path == "/api/v1/session/audit":
             self._audit(
                 auth, "authentication.succeeded", "session", auth.actor_id, request_id,
@@ -812,7 +820,8 @@ class LocalAPI:
             if path == "/api/v1/response/policy":
                 return APIResponse(200, self.response.policy(*scope))
             if path == "/api/v1/response/capabilities":
-                return APIResponse(200, self.response.capabilities())
+                return APIResponse(200, {**self.response.capabilities(*scope),
+                    "actor_id": auth.actor_id, "permissions": sorted(auth.permissions)})
             for resource, kind in (("assets", "asset"), ("actions", "action"), ("journal", "journal")):
                 if path == "/api/v1/response/" + resource:
                     items = self.response.list(*scope, kind,
@@ -834,6 +843,9 @@ class LocalAPI:
         if method == "POST" and path == "/api/v1/response/actions":
             auth.require("response:propose")
             return APIResponse(201, self.response.propose(*scope, auth.actor_id, body))
+        if method == "POST" and path == "/api/v1/response/simulations":
+            auth.require("response:propose")
+            return APIResponse(200, self.response.simulate_alerts(*scope, auth.actor_id, body))
         match = re.fullmatch(r"/api/v1/response/actions/([^/]+)/(approve|cancel|release)", path)
         if method == "POST" and match:
             action_id, operation = match.groups()

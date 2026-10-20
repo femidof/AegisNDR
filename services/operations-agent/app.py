@@ -44,7 +44,7 @@ def authorized_for_metrics(metrics_token: str, authorization: str) -> bool:
 
 def main() -> int:
     config = OperationsConfig.from_env(os.environ)
-    postgres = PostgresOperations(config.postgres_url)
+    postgres = PostgresOperations(config.postgres_url, tenant_id=config.tenant_id, deployment_id=config.deployment_id)
     postgres.migrate(config.migration_file)
     clickhouse = ClickHouseOperations(
         config.clickhouse_url,

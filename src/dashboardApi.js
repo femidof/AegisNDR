@@ -172,7 +172,7 @@ export function mapEvent(record) {
     destination,
     protocol: [String(record.protocol || "").toUpperCase(), record.dst_port].filter(Boolean).join("/"),
     bytes: bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`,
-    verdict: record.event_type === "network.alert" ? "Suspicious" : "Allowed",
+    verdict: record.event_type === "network.alert" ? "Suspicious" : "Observed",
     type: titleCase(record.event_type),
     detail: details.signature || details.query || `${record.source || "local"} event`,
     captured: formatUtc(record.event_time),
@@ -210,7 +210,7 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
   if (!deploymentId || !getAccessToken || !fetchImpl) throw new TypeError("Dashboard API requires deploymentId, getAccessToken, and fetch.");
   const normalizedBase = String(baseUrl).replace(/\/+$/, "");
 
-  async function request(path, { method = "GET", body, retry = true } = {}) {
+  async function request(path, { method = "GET", body, retry = true, signal = AbortSignal.timeout(15_000) } = {}) {
     const token = await getAccessToken({ forceRefresh: false });
     const response = await fetchImpl(`${normalizedBase}${path}`, {
       method,
@@ -222,10 +222,11 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "same-origin",
+      ...(signal ? { signal } : {}),
     });
     if (response.status === 401 && retry) {
       await getAccessToken({ forceRefresh: true });
-      return request(path, { method, body, retry: false });
+      return request(path, { method, body, retry: false, signal });
     }
     let payload = null;
     if (response.status !== 204) {
@@ -244,6 +245,25 @@ export function createDashboardApi({ baseUrl = "", deploymentId, getAccessToken,
 
   return {
     request,
+    async getSession() { return request("/api/v1/session"); },
+    async getSystemHealth() { return request("/api/v1/system/health", { signal: AbortSignal.timeout(12_000) }); },
+    async getResponseCapabilities() { return request("/api/v1/response/capabilities"); },
+    async getResponsePolicy() { return request("/api/v1/response/policy"); },
+    async updateResponsePolicy(changes) { return request("/api/v1/response/policy", { method: "PATCH", body: changes }); },
+    async stopResponse() { return request("/api/v1/response/emergency-stop", { method: "POST", body: {} }); },
+    async listResponseAssets(offset = 0) { return items(await request(`/api/v1/response/assets?limit=500&offset=${offset}`)); },
+    async registerResponseAsset(asset) { return request("/api/v1/response/assets", { method: "POST", body: asset }); },
+    async listResponseActions(offset = 0) { return items(await request(`/api/v1/response/actions?limit=50&offset=${offset}`)); },
+    async getResponseAction(id) { return request(`/api/v1/response/actions/${encodeURIComponent(id)}`); },
+    async proposeResponse(proposal) { return request("/api/v1/response/actions", { method: "POST", body: proposal }); },
+    async simulateResponseAlerts(body) { return request("/api/v1/response/simulations", { method: "POST", body }); },
+    async transitionResponse(id, operation, proposalHash) {
+      if (!["approve", "cancel", "release"].includes(operation)) throw new TypeError("Unsupported response action.");
+      return request(`/api/v1/response/actions/${encodeURIComponent(id)}/${operation}`, {
+        method: "POST", body: { proposal_hash: proposalHash },
+      });
+    },
+    async listResponseJournal(offset = 0) { return items(await request(`/api/v1/response/journal?limit=50&offset=${offset}`)); },
     async recordSession() { return request("/api/v1/session/audit", { method: "POST", body: {} }); },
     async getOverview() { return request("/api/v1/overview"); },
     async listAlerts() { return items(await request("/api/v1/alerts?limit=50")).map(mapAlert); },

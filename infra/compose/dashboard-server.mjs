@@ -37,6 +37,7 @@ function proxyApi(incoming, outgoing) {
   const forwardedHeaders = {
     accept: incoming.headers.accept || "application/json",
     authorization: incoming.headers.authorization || "",
+    ...(incoming.headers["x-deployment-id"] ? { "X-Deployment-ID": incoming.headers["x-deployment-id"] } : {}),
     ...(incoming.headers["content-type"] ? { "content-type": incoming.headers["content-type"] } : {}),
     ...(incoming.headers["content-length"] ? { "content-length": incoming.headers["content-length"] } : {}),
   };
@@ -55,13 +56,21 @@ function proxyApi(incoming, outgoing) {
     if (!outgoing.headersSent) outgoing.writeHead(502, { "Content-Type": "application/json" });
     outgoing.end(JSON.stringify({ error: { code: "local_api_unavailable", message: "The local API is unavailable." } }));
   });
+  upstream.setTimeout(12_000, () => upstream.destroy(new Error("Local API deadline exceeded")));
+  incoming.on("aborted", () => upstream.destroy());
+  outgoing.on("close", () => { if (!outgoing.writableEnded) upstream.destroy(); });
   incoming.pipe(upstream);
 }
 
 function securityHeaders(contentType = "") {
+  const connectSources = ["'self'"];
+  try {
+    const identity = new URL(process.env.LOGTO_PUBLIC_ENDPOINT || "");
+    if (["http:", "https:"].includes(identity.protocol) && !identity.username && !identity.password) connectSources.push(identity.origin);
+  } catch { /* Missing identity configuration is reported by the dashboard. */ }
   const headers = {
     ...(contentType ? { "Content-Type": contentType } : {}),
-    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ${connectSources.join(" ")}; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Referrer-Policy": "no-referrer",

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mode": "probe",
+  "tenant_id": "demo-tenant",
+  "deployment_id": "demo-deployment",
+  "integration_id": "lab-defender-probe",
+  "device_id": "0000000000000000000000000000000000000001",
+  "controller_fingerprints": ["0000000000000000000000000000000000000000000000000000000000000000"],
+  "probe_destinations": [
+    { "address": "192.0.2.20", "port": 443 },
+    { "address": "192.0.2.21", "port": 443 }
+  ]
+}

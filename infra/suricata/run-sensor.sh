@@ -26,6 +26,7 @@ case "$mode" in
     exec suricata \
       -c /etc/suricata/suricata.yaml \
       --runmode workers \
+      --set unix-command.enabled=no \
       --set outputs.1.eve-log.community-id=true \
       -k none \
       -S "$rules" \

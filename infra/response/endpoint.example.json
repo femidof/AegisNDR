@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "endpoint",
+  "tenant_id": "demo-tenant",
+  "deployment_id": "demo-deployment",
+  "integration_id": "lab-linux-agent",
+  "device_id": "lab-endpoint-01",
+  "targets": { "lab-endpoint-01": ["192.0.2.10"] },
+  "management_networks": ["192.0.2.5/32"],
+  "controller_fingerprints": ["0000000000000000000000000000000000000000000000000000000000000000"]
+}

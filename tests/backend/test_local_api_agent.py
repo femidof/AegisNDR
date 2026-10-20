@@ -25,6 +25,24 @@ class LocalAPITests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
 
+    def test_session_capabilities_reflect_server_permissions_without_granting_access(self):
+        result = self.api.handle("GET", "/api/v1/session", headers=self.headers)
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body["actor_id"], "analyst-01")
+        self.assertEqual(result.body["deployment_id"], "demo-deployment")
+        self.assertIn("response:propose", result.body["permissions"])
+        self.assertNotIn("response:approve", result.body["permissions"])
+        self.assertNotIn("deployments:manage", result.body["permissions"])
+        result = self.api.handle("GET", "/api/v1/session", headers={})
+        self.assertEqual(result.status, 401)
+
+    def test_policy_tuning_preserves_an_existing_disabled_model_policy(self):
+        self.store.set_policy("demo-tenant", "demo-deployment", {"enabled": False})
+        headers = {**self.headers, "X-Role": "security_admin"}
+        result = self.api.handle("PATCH", "/api/v1/model-policy", headers=headers, body={"level": "strict"})
+        self.assertEqual(result.status, 200, result.body)
+        self.assertFalse(result.body["enabled"])
+
     def test_tenant_isolation_and_role_enforcement(self):
         other = support.analyst_headers("other-tenant", "other-deployment")
         result = self.api.handle("GET", "/api/v1/alerts/demo-alert-port-scan", headers=other)

@@ -58,17 +58,20 @@ services:
       - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/clickhouse-key.pem:/mnt/internal-tls/clickhouse-key.pem:ro
       - ../internal-tls/clickhouse-tls.xml:/etc/clickhouse-server/config.d/hybrid-ndr-tls.xml:ro
       - ../internal-tls/clickhouse-entrypoint.sh:/opt/hybrid-ndr/clickhouse-entrypoint.sh:ro
+      - ../internal-tls/clickhouse-client.xml:/etc/clickhouse-client/config.xml:ro
+    healthcheck:
+      test: [CMD-SHELL, "clickhouse-client --secure --host clickhouse --port 9440 --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
 
   minio:
     group_add: ["${HYBRID_NDR_INTERNAL_TLS_GID:-1000}"]
-    command: server /data --console-address :9001
+    command: server --certs-dir /run/internal-tls /data --console-address :9001
     volumes:
       - minio-data:/data
-      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/root/.minio/certs/CAs/ca-cert.pem:ro
-      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-cert.pem:/root/.minio/certs/public.crt:ro
-      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-key.pem:/root/.minio/certs/private.key:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/CAs/ca-cert.pem:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-cert.pem:/run/internal-tls/public.crt:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/minio-key.pem:/run/internal-tls/private.key:ro
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/root/.minio/certs/CAs/ca-cert.pem", "https://127.0.0.1:9000/minio/health/ready"]
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/internal-tls/CAs/ca-cert.pem", "https://127.0.0.1:9000/minio/health/ready"]
 
   minio-init:
     volumes:
@@ -126,4 +129,9 @@ services:
   prometheus:
     volumes:
       - ../internal-tls/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro
+
+  blackbox-exporter:
+    volumes:
+      - ../internal-tls/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
       - ${HYBRID_NDR_INTERNAL_TLS_DIR:-./.runtime/internal-tls}/ca-cert.pem:/run/internal-tls/ca-cert.pem:ro

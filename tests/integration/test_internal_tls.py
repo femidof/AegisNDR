@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -13,12 +14,17 @@ INTERNAL_TLS_COMPOSE = ROOT / "infra/compose/docker-compose.internal-tls.yml"
 ENV_FILE = ROOT / "infra/compose/.env.example"
 
 
-def _config() -> dict:
+def _config(*, response=False) -> dict:
+    environment = os.environ.copy()
+    if response:
+        environment.update(RESPONSE_CONFIG_DIR=str(ROOT / "infra/response"),
+                           RESPONSE_SECRETS_DIR=str(ROOT / "infra/response"))
     result = subprocess.run(
         [
             "docker", "compose", "--project-directory", str(ROOT),
             "--file", str(BASE_COMPOSE), "--file", str(INTERNAL_TLS_COMPOSE),
             "--env-file", str(ENV_FILE), "--profile", "customer",
+            *(["--file", str(ROOT / "infra/compose/docker-compose.response.yml"), "--profile", "response"] if response else []),
             "config", "--format", "json",
         ],
         cwd=ROOT,
@@ -26,12 +32,42 @@ def _config() -> dict:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=environment,
     )
     return json.loads(result.stdout)["services"]
 
 
 @unittest.skipUnless(shutil.which("docker"), "Docker Compose is unavailable")
 class InternalTlsTests(unittest.TestCase):
+    def test_response_overlay_preserves_scope_and_credential_boundaries(self):
+        services = _config(response=True)
+        worker, api = services["response-worker"], services["local-api"]
+        self.assertEqual(set(worker["networks"]), {"local-data", "response-egress"})
+        self.assertNotIn("response-egress", api["networks"])
+        self.assertTrue(worker["read_only"])
+        self.assertEqual(worker["cap_drop"], ["ALL"])
+        self.assertFalse(worker.get("cap_add"))
+        self.assertFalse(worker.get("privileged"))
+        self.assertEqual(worker["restart"], "unless-stopped")
+        self.assertEqual(worker["profiles"], ["response"])
+        self.assertEqual(worker["environment"]["PERSISTENCE_PROFILE"], "production")
+        self.assertEqual(worker["environment"]["PERSISTENCE_CA_FILE"], "/run/internal-tls/ca-cert.pem")
+        self.assertTrue(worker["environment"]["CLICKHOUSE_URL"].startswith("https://"))
+        self.assertTrue(worker["environment"]["MINIO_ENDPOINT"].startswith("https://"))
+        for identity in ("TENANT_ID", "DEPLOYMENT_ID"):
+            self.assertEqual(worker["environment"][identity], api["environment"][identity])
+        self.assertNotIn("/run/response-secrets", {volume["target"] for volume in api["volumes"]})
+        secrets = next(volume for volume in worker["volumes"] if volume["target"] == "/run/response-secrets")
+        self.assertTrue(secrets["read_only"])
+        config_mount = next(volume for volume in api["volumes"] if volume["target"] == "/etc/aegisndr/response")
+        self.assertTrue(config_mount["read_only"])
+        self.assertTrue(Path(config_mount["source"]).is_dir())
+        self.assertNotIn("docker.sock", str(worker["volumes"]))
+        self.assertIn("USER 65532:65532", (ROOT / "infra/compose/python.Dockerfile").read_text())
+        defaults = json.loads((ROOT / "infra/response/controller.example.json").read_text())
+        self.assertFalse(defaults["enabled"])
+        self.assertFalse(defaults["automatic_proposals"])
+
     def test_internal_tls_overlay_encrypts_every_credential_bearing_hop(self) -> None:
         services = _config()
 
@@ -53,8 +89,12 @@ class InternalTlsTests(unittest.TestCase):
             (item["target"] if isinstance(item, dict) else item.split(":")[1])
             for item in services["minio"]["volumes"]
         }
-        self.assertIn("/root/.minio/certs/public.crt", minio_mounts)
-        self.assertIn("/root/.minio/certs/private.key", minio_mounts)
+        self.assertIn("/run/internal-tls/public.crt", minio_mounts)
+        self.assertIn("/run/internal-tls/private.key", minio_mounts)
+        self.assertIn("--certs-dir", " ".join(services["minio"]["command"]))
+        clickhouse_tls = (ROOT / "infra/internal-tls/clickhouse-tls.xml").read_text()
+        self.assertIn('<tcp_port remove="1"/>', clickhouse_tls)
+        self.assertIn('<http_port remove="1"/>', clickhouse_tls)
 
         for service_name in ("local-api", "detection-engine", "operations-agent"):
             environment = services[service_name]["environment"]
@@ -65,6 +105,22 @@ class InternalTlsTests(unittest.TestCase):
 
         local_api_dsn = services["local-api"]["environment"]["POSTGRES_URL"]
         self.assertTrue(local_api_dsn.startswith("postgresql://"))
+
+    def test_monitoring_probes_follow_the_encrypted_endpoints(self):
+        services = _config()
+        mounts = {item["target"]: item for item in services["blackbox-exporter"]["volumes"]}
+        self.assertTrue(mounts["/run/internal-tls/ca-cert.pem"]["read_only"])
+        self.assertTrue(mounts["/etc/blackbox_exporter/config.yml"]["source"].endswith("internal-tls/blackbox.yml"))
+        config = (ROOT / "infra/internal-tls/blackbox.yml").read_text()
+        self.assertIn("tls: true", config)
+        self.assertIn("ca_file: /run/internal-tls/ca-cert.pem", config)
+        self.assertNotIn("insecure_skip_verify", config)
+        prometheus = (ROOT / "infra/internal-tls/prometheus.yml").read_text()
+        self.assertIn("https://minio:9000/minio/health/ready", prometheus)
+        self.assertIn("targets: [clickhouse:9440]", prometheus)
+        self.assertNotIn("http://minio:9000/minio/health/ready", prometheus)
+        for identity in ("TENANT_ID", "DEPLOYMENT_ID"):
+            self.assertEqual(services["operations-agent"]["environment"][identity], services["local-api"]["environment"][identity])
 
     def test_internal_data_plane_has_no_plaintext_listeners(self) -> None:
         services = _config()

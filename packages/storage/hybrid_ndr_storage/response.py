@@ -18,6 +18,7 @@ class ResponseRepository:
     def __init__(self, store):
         self.store = getattr(store, "metadata", store)
         self.postgres = hasattr(self.store, "_transaction")
+        self.scope = None
         if self.postgres:
             self.store.ensure_detection_schema()
 
@@ -25,6 +26,8 @@ class ResponseRepository:
     def transaction(self, tenant_id, deployment_id):
         if not tenant_id or not deployment_id:
             raise ValueError("response scope is required")
+        if self.scope is not None and (tenant_id, deployment_id) != self.scope:
+            raise NotFoundError("response resource not found")
         if self.postgres:
             with self.store._transaction() as cursor:
                 cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
@@ -61,7 +64,7 @@ class ResponseSession:
             raise NotFoundError("response resource not found")
         return json.loads(row[0])
 
-    def list(self, kind, *, states=None, limit=100, offset=0):
+    def list(self, kind, *, states=None, limit=100, offset=0, oldest=False):
         p = self.p
         clause, values = "", (*self.scope, kind)
         if states:
@@ -69,7 +72,7 @@ class ResponseSession:
             values += tuple(states)
         self.cursor.execute(f"SELECT payload_json FROM {self.table} WHERE tenant_id={p} "
                             f"AND deployment_id={p} AND kind={p}{clause} "
-                            f"ORDER BY updated_at DESC, record_id LIMIT {p} OFFSET {p}",
+                            f"ORDER BY updated_at {'ASC' if oldest else 'DESC'}, record_id LIMIT {p} OFFSET {p}",
                             (*values, min(max(int(limit), 1), 1001), max(int(offset), 0)))
         return [json.loads(row[0]) for row in self.cursor.fetchall()]
 

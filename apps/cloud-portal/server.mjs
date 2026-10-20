@@ -106,17 +106,28 @@ function proxyPortal(incoming, outgoing) {
     method: incoming.method,
     path: upstreamPath,
     headers: forwardedHeaders,
+    // Bound DNS, connection setup and streaming with one request deadline.
+    signal: AbortSignal.timeout(10_000),
   }, (response) => {
     const headers = {
       ...securityHeaders(String(response.headers["content-type"] || "application/json; charset=utf-8")),
       "Cache-Control": "no-store",
     };
     outgoing.writeHead(response.statusCode || 502, headers);
+    response.on("error", () => outgoing.destroy());
     response.pipe(outgoing);
   });
   upstream.on("error", () => {
-    if (!outgoing.headersSent) outgoing.writeHead(502, { ...securityHeaders("application/json; charset=utf-8"), "Cache-Control": "no-store" });
+    if (outgoing.headersSent) {
+      outgoing.destroy();
+      return;
+    }
+    outgoing.writeHead(502, { ...securityHeaders("application/json; charset=utf-8"), "Cache-Control": "no-store" });
     outgoing.end('{"error":{"code":"control_plane_unavailable","message":"The vendor control plane is unavailable."}}');
+  });
+  incoming.on("aborted", () => upstream.destroy());
+  outgoing.on("close", () => {
+    if (!outgoing.writableFinished) upstream.destroy();
   });
   incoming.pipe(upstream);
 }
